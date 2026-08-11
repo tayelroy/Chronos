@@ -1,2 +1,10 @@
-# Chronos
-Project Chronos is a cloud-edge hybrid Deception &amp; Active Defense Mesh designed to run within the constraints of a home (No port mirroring, M3 Air Macbook) 
+**Cloud-Edge Hybrid Deception & Active Defense Mesh**
+
+## Architecture Overview
+- **Deception Layer**: Cowrie SSH/Telnet honeypots & custom HTTP canary traps.
+- **Log Pipeline**: Vector log streaming and structured parsing.
+- **SIEM & Incident Response**: OpenSearch 2.x & TheHive 5 (Community Edition).
+- **Active Defense**: Automated tarpitting, canary token payload tracking, and threat intel synthesis.
+
+## Target Hardware
+- Apple Silicon (M3 Air 16GB RAM) optimized container stack.
