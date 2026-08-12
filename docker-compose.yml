@@ -1,0 +1,65 @@
+version: '3.8'
+
+networks:
+  chronos_mesh:
+    driver: bridge
+
+services:
+  opensearch:
+    image: opensearchproject/opensearch:2.11.1
+    container_name: chronos-opensearch
+    environment:
+      - cluster.name=chronos-cluster
+      - node.name=chronos-node1
+      - discovery.type=single-node
+      - OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g
+      - DISABLE_SECURITY_PLUGIN=true # Simplifies Phase 1 HTTP auth for local development
+    mem_limit: 1500m
+    ports:
+      - "9200:9200"
+    networks:
+      - chronos_mesh
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200/_cat/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  vector:
+    image: timberio/vector:0.34.X-alpine
+    container_name: chronos-vector
+    mem_limit: 300m
+    volumes:
+      - ./config/vector/vector.yaml:/etc/vector/vector.yaml:ro
+      - ./logs/cowrie:/var/log/cowrie:ro
+      - ./logs/canary:/var/log/canary:ro
+    ports:
+      - "8686:8686"
+    networks:
+      - chronos_mesh
+    depends_on:
+      opensearch:
+        condition: service_healthy
+
+  cowrie:
+    image: cowrie/cowrie:latest
+    container_name: chronos-cowrie
+    mem_limit: 250m
+    ports:
+      - "2222:2222"
+    volumes:
+      - ./logs/cowrie:/cowrie/cowrie-git/var/log/cowrie
+    networks:
+      - chronos_mesh
+
+  canary_http:
+    build:
+      context: ./honeypots/canary_http
+    container_name: chronos-canary-http
+    mem_limit: 150m
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./logs/canary:/app/logs
+    networks:
+      - chronos_mesh
