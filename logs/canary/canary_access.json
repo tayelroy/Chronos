@@ -1,0 +1,3 @@
+{"timestamp": "2026-08-12T06:58:39Z", "event_type": "canary_http_hit", "src_ip": "192.168.97.1", "method": "GET", "path": "/admin/config.php", "user_agent": "Nikto/2.1.6", "headers": {"Host": "localhost:8080", "User-Agent": "Nikto/2.1.6", "Accept": "*/*"}}
+{"timestamp": "2026-08-12T06:58:51Z", "event_type": "canary_http_hit", "src_ip": "192.168.97.1", "method": "GET", "path": "/wp-login.php", "user_agent": "sqlmap/1.5", "headers": {"Host": "localhost:8080", "User-Agent": "sqlmap/1.5", "Accept": "*/*"}}
+{"timestamp": "2026-08-12T07:14:59Z", "event_type": "canary_http_hit", "src_ip": "192.168.97.1", "method": "GET", "path": "/wp-login.php", "user_agent": "sqlmap/1.5", "headers": {"Host": "localhost:8080", "User-Agent": "sqlmap/1.5", "Accept": "*/*"}}
