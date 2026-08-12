@@ -3,13 +3,15 @@ sources:
     type: file
     include:
       - /var/log/canary/*.json
-    ignore_older_secs: 600
+    ignore_older_secs: 86400
+    read_from: beginning
 
   cowrie_logs:
     type: file
     include:
       - /var/log/cowrie/cowrie.json*
-    ignore_older_secs: 600
+    ignore_older_secs: 86400
+    read_from: beginning
 
 transforms:
   parse_canary_json:
@@ -33,7 +35,7 @@ transforms:
 
 sinks:
   opensearch_out:
-    type: opensearch
+    type: elasticsearch
     inputs:
       - parse_canary_json
       - parse_cowrie_json
@@ -42,3 +44,4 @@ sinks:
     mode: bulk
     bulk:
       index: "chronos-logs-%Y.%m.%d"
+    suppress_type_name: true
