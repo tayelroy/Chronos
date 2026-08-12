@@ -1,0 +1,44 @@
+sources:
+  canary_http_logs:
+    type: file
+    include:
+      - /var/log/canary/*.json
+    ignore_older_secs: 600
+
+  cowrie_logs:
+    type: file
+    include:
+      - /var/log/cowrie/cowrie.json*
+    ignore_older_secs: 600
+
+transforms:
+  parse_canary_json:
+    type: remap
+    inputs:
+      - canary_http_logs
+    source: |
+      . = parse_json!(.message)
+      .source_type = "canary_http"
+
+  parse_cowrie_json:
+    type: remap
+    inputs:
+      - cowrie_logs
+    source: |
+      parsed, err = parse_json(.message)
+      if err == null {
+        . = parsed
+      }
+      .source_type = "cowrie"
+
+sinks:
+  opensearch_out:
+    type: opensearch
+    inputs:
+      - parse_canary_json
+      - parse_cowrie_json
+    endpoints:
+      - "http://opensearch:9200"
+    mode: bulk
+    bulk:
+      index: "chronos-logs-%Y.%m.%d"
