@@ -8,3 +8,7 @@
 
 ## Target Hardware
 - Apple Silicon (M3 Air 16GB RAM) optimized container stack.
+
+## Required Secrets
+- Set `THEHIVE_SECRET_KEY` and `CORTEX_SECRET_KEY` in a local `.env` file before starting the stack.
+- Use the `${VARIABLE_NAME}` syntax in `docker-compose.yml` for secret environment values.
