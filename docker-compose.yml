@@ -35,6 +35,7 @@ services:
       - ./logs/canary:/var/log/canary:ro
     ports:
       - "8686:8686"
+      - "9002:9002"
     networks:
       - chronos_mesh
     depends_on:
