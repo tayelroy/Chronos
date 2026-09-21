@@ -13,7 +13,7 @@ services:
       - node.name=chronos-node1
       - discovery.type=single-node
       - OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g
-      - DISABLE_SECURITY_PLUGIN=true # Simplifies Phase 1 HTTP auth for local development
+      - DISABLE_SECURITY_PLUGIN=true
     mem_limit: 1500m
     ports:
       - "9200:9200"
@@ -24,6 +24,42 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  thehive:
+    image: strangebee/thehive:5.2
+    container_name: chronos-thehive
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    environment:
+      - SECRET_KEY=${THEHIVE_SECRET_KEY}
+    command:
+      - --secret
+      - "${THEHIVE_SECRET_KEY}"
+      - --db-janusgraph-storage-backend
+      - berkeleydb
+      - --db-janusgraph-storage-directory
+      - /opt/thp/thehive/data/db
+      - --index-backend-search-engine
+      - opensearch
+      - --index-backend-search-nodes
+      - "opensearch:9200"
+    mem_limit: 1800m
+    ports:
+      - "9000:9000"
+    networks:
+      - chronos_mesh
+
+  cortex:
+    image: strangebee/cortex:3.1.1
+    container_name: chronos-cortex
+    environment:
+      - SECRET_KEY=${CORTEX_SECRET_KEY}
+    mem_limit: 1200m
+    ports:
+      - "9001:9001"
+    networks:
+      - chronos_mesh
 
   vector:
     image: timberio/vector:0.34.X-alpine
