@@ -51,13 +51,12 @@ services:
     command:
       - --secret
       - "${THEHIVE_SECRET_KEY}"
-      - --db-janusgraph-storage-backend
-      - berkeleydb
-      - --db-janusgraph-storage-directory
-      - /opt/thp/thehive/data/db
-      - --index-backend-search-engine
-      - opensearch
-      - --index-backend-search-nodes
+      - --no-cql-wait
+      - --bdb-directory
+      - /data/db
+      - --index-backend
+      - elasticsearch
+      - --es-hostnames
       - "opensearch:9200"
     mem_limit: 1800m
     ports:
