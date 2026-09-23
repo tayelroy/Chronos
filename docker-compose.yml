@@ -51,7 +51,7 @@ services:
       - chronos_mesh
 
   cortex:
-    image: strangebee/cortex:3.1.1
+    image: thehiveproject/cortex:3.1.1-1
     container_name: chronos-cortex
     environment:
       - SECRET_KEY=${CORTEX_SECRET_KEY}
@@ -62,7 +62,7 @@ services:
       - chronos_mesh
 
   vector:
-    image: timberio/vector:0.34.X-alpine
+    image: timberio/vector:0.34.1-alpine
     container_name: chronos-vector
     mem_limit: 300m
     volumes:
