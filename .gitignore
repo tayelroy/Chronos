@@ -4,4 +4,6 @@ data/
 .env
 Journey.md
 docs/
+session-manager-plugin.pkg
+attachments/image.png
 aws/
