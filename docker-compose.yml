@@ -57,7 +57,7 @@ services:
       - --index-backend
       - elasticsearch
       - --es-hostnames
-      - "opensearch:9200"
+      - "opensearch"
     mem_limit: 1800m
     ports:
       - "9000:9000"
