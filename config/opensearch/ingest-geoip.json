@@ -1,0 +1,25 @@
+{
+  "description": "Chronos source-IP enrichment using the GeoLite2 City/ASN databases bundled with OpenSearch 2.11.1 (built Nov 2023).",
+  "processors": [
+    {
+      "geoip": {
+        "field": "src_ip",
+        "target_field": "geo",
+        "database_file": "GeoLite2-City.mmdb",
+        "properties": ["country_iso_code", "country_name", "city_name", "location"],
+        "ignore_missing": true,
+        "ignore_failure": true
+      }
+    },
+    {
+      "geoip": {
+        "field": "src_ip",
+        "target_field": "as",
+        "database_file": "GeoLite2-ASN.mmdb",
+        "properties": ["asn", "organization_name"],
+        "ignore_missing": true,
+        "ignore_failure": true
+      }
+    }
+  ]
+}

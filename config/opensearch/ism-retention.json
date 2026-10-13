@@ -1,0 +1,21 @@
+{
+  "policy": {
+    "description": "Delete Chronos daily indices 60 days after creation (40 GB core volume).",
+    "default_state": "hot",
+    "states": [
+      {
+        "name": "hot",
+        "actions": [],
+        "transitions": [{ "state_name": "delete", "conditions": { "min_index_age": "60d" } }]
+      },
+      {
+        "name": "delete",
+        "actions": [{ "delete": {} }],
+        "transitions": []
+      }
+    ],
+    "ism_template": [
+      { "index_patterns": ["chronos-logs-*", "chronos-replay-*"], "priority": 100 }
+    ]
+  }
+}

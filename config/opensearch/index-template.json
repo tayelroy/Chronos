@@ -1,0 +1,64 @@
+{
+  "index_patterns": ["chronos-logs-*", "chronos-replay-*"],
+  "priority": 100,
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "index.default_pipeline": "chronos-geoip",
+      "index.mapping.total_fields.limit": 2000
+    },
+    "mappings": {
+      "dynamic_templates": [
+        {
+          "strings_as_keywords": {
+            "match_mapping_type": "string",
+            "mapping": { "type": "keyword", "ignore_above": 2048 }
+          }
+        }
+      ],
+      "properties": {
+        "timestamp": { "type": "date" },
+        "src_ip": { "type": "ip" },
+        "src_port": { "type": "integer" },
+        "dst_ip": { "type": "ip" },
+        "dst_port": { "type": "integer" },
+        "severity": { "type": "integer" },
+        "session": { "type": "keyword" },
+        "eventid": { "type": "keyword" },
+        "honeypot": { "type": "keyword" },
+        "detection_key": { "type": "keyword" },
+        "mitre_technique": { "type": "keyword" },
+        "mitre_tactic": { "type": "keyword" },
+        "command_techniques": { "type": "keyword" },
+        "username": { "type": "keyword", "ignore_above": 512 },
+        "password": { "type": "keyword", "ignore_above": 512 },
+        "input": {
+          "type": "keyword",
+          "ignore_above": 8191,
+          "fields": { "text": { "type": "text" } }
+        },
+        "duration": { "type": "float" },
+        "path": { "type": "keyword", "ignore_above": 4096 },
+        "query": { "type": "keyword", "ignore_above": 4096 },
+        "body": { "type": "keyword", "ignore_above": 4096 },
+        "user_agent": { "type": "keyword", "ignore_above": 1024 },
+        "headers": { "type": "flat_object" },
+        "geo": {
+          "properties": {
+            "country_iso_code": { "type": "keyword" },
+            "country_name": { "type": "keyword" },
+            "city_name": { "type": "keyword" },
+            "location": { "type": "geo_point" }
+          }
+        },
+        "as": {
+          "properties": {
+            "asn": { "type": "long" },
+            "organization_name": { "type": "keyword" }
+          }
+        }
+      }
+    }
+  }
+}
