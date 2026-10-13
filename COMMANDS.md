@@ -12,10 +12,32 @@ IDs
 
 ## Start / stop
 
+From anywhere (shell function in ~/.zshrc, see below):
+
+    chronos                             # = ./start_chronos.sh
+    chronos start --no-tunnels
+    chronos stop                        # = ./stop_chronos.sh
+    chronos stop --all
+    chronos cmds                        # print this file
+
+From the repo:
+
     ./start_chronos.sh                  # start both instances if stopped, compose up both, tunnels 9000/5601/9200, opens browser
     ./start_chronos.sh --no-tunnels     # same, without tunnels
     ./stop_chronos.sh                   # stop the core only (sensor keeps collecting, events buffer on the sensor)
     ./stop_chronos.sh --all             # stop both (collection pauses)
+
+The `chronos` function (already in ~/.zshrc on this Mac; adjust the path on another machine):
+
+    chronos() {
+      local repo="$HOME/Coding/Chronos"
+      case "${1:-start}" in
+        start) shift 2>/dev/null; "$repo/start_chronos.sh" "$@" ;;
+        stop)  shift; "$repo/stop_chronos.sh" "$@" ;;
+        cmds)  cat "$repo/COMMANDS.md" ;;
+        *)     echo "usage: chronos [start [--no-tunnels] | stop [--all] | cmds]" >&2; return 2 ;;
+      esac
+    }
 
     aws ec2 describe-instances --instance-ids i-073658c52d98d9975 i-024b46954f573b978 \
       --query 'Reservations[].Instances[].[InstanceId,State.Name]' --output text
