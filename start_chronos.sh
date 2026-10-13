@@ -13,9 +13,19 @@ source scripts/lib/ssm.sh
 TUNNELS=1
 [[ "${1:-}" == "--no-tunnels" ]] && TUNNELS=0
 
-echo "=================================================="
-echo "Chronos: sensor $CHRONOS_SENSOR_ID · core $CHRONOS_SOC_ID"
-echo "=================================================="
+cat <<'BANNER'
+
+   ██████╗██╗  ██╗██████╗  ██████╗ ███╗   ██╗ ██████╗ ███████╗
+  ██╔════╝██║  ██║██╔══██╗██╔═══██╗████╗  ██║██╔═══██╗██╔════╝
+  ██║     ███████║██████╔╝██║   ██║██╔██╗ ██║██║   ██║███████╗
+  ██║     ██╔══██║██╔══██╗██║   ██║██║╚██╗██║██║   ██║╚════██║
+  ╚██████╗██║  ██║██║  ██║╚██████╔╝██║ ╚████║╚██████╔╝███████║
+   ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝ ╚═════╝ ╚══════╝
+        honeypot sensor  ──▶  SIEM  ──▶  case management
+
+BANNER
+echo "  sensor $CHRONOS_SENSOR_ID · core $CHRONOS_SOC_ID"
+echo
 
 ensure_running "$CHRONOS_SENSOR_ID" "$CHRONOS_SOC_ID"
 
