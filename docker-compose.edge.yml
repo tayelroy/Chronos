@@ -38,8 +38,10 @@ services:
     mem_limit: 150m
     environment:
       - CHRONOS_CORE_ADDR=${CHRONOS_CORE_ADDR:?set CHRONOS_CORE_ADDR in .env (core private ip:9002)}
+    # Directory mount so git-updated configs are visible; scripts/deploy.sh restarts this service.
+    command: ["--config", "/etc/vector/vector-edge.yaml"]
     volumes:
-      - ./config/vector/vector-edge.yaml:/etc/vector/vector.yaml:ro
+      - ./config/vector:/etc/vector:ro
       - ./logs/cowrie:/var/log/cowrie:ro
       - ./logs/canary:/var/log/canary:ro
       # File-read checkpoints + disk buffer survive restarts and core downtime.

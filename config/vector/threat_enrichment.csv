@@ -7,6 +7,8 @@ cowrie.session.params,1,None,None,Session parameters
 cowrie.login.failed,2,T1110.001,Credential Access,SSH/Telnet password guessing attempt
 cowrie.login.success,4,T1078.001,Initial Access,Successful login with default or weak credentials
 cowrie.command.input,4,T1059.004,Execution,Shell command executed
+cowrie.command.success,1,None,None,Cowrie internal command acknowledgement
+cowrie.telnet.option,1,None,None,Telnet option negotiation
 cowrie.command.failed,3,T1059.004,Execution,Unrecognized shell command
 cowrie.session.file_download,5,T1105,Command and Control,Tool download staged
 cowrie.session.file_download.failed,4,T1105,Command and Control,Tool download attempted

@@ -54,6 +54,7 @@ grep -q '^vm.max_map_count' /etc/sysctl.conf || echo 'vm.max_map_count=262144' >
 docker compose -f docker-compose.core.yml up -d --build opensearch opensearch-dashboards thehive vector-core
 python3 scripts/core-bootstrap.py
 docker compose -f docker-compose.core.yml up -d --build --remove-orphans
+docker compose -f docker-compose.core.yml restart vector-core  # reload pipeline/catalog changes
 docker compose -f docker-compose.core.yml ps --format 'table {{.Name}}\t{{.Status}}'"
     ;;
   sensor)
@@ -82,6 +83,7 @@ mkdir -p logs/cowrie logs/cowrie-tty logs/cowrie-downloads logs/canary
 chown -R 999:999 logs/cowrie logs/cowrie-tty logs/cowrie-downloads
 echo 'CHRONOS_CORE_ADDR=$CORE_IP:9002' > .env
 docker compose -f docker-compose.edge.yml up -d --build --remove-orphans
+docker compose -f docker-compose.edge.yml restart vector-edge  # reload shipper config; checkpoints persist
 docker compose -f docker-compose.edge.yml ps --format 'table {{.Name}}\t{{.Status}}'
 ss -tlnp | grep -E ':(22|23|80|22222) '"
     ;;

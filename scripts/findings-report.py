@@ -18,6 +18,7 @@ import json
 import os
 import re
 import sys
+import urllib.error
 import urllib.request
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
@@ -108,8 +109,11 @@ class OpenSearch:
     def _req(self, path, body):
         req = urllib.request.Request(f"{self.url}/{path}", data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            return json.load(resp)
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                return json.load(resp)
+        except urllib.error.HTTPError as e:
+            sys.exit(f"[-] OpenSearch {path} failed: HTTP {e.code} {e.read().decode()[:800]}")
 
     def query(self, *filters):
         q = {"bool": {"filter": list(self.base_filter) + list(filters)}}
@@ -242,7 +246,7 @@ def section_credentials(os_):
         "users": terms("username", 15, aggs={"ips": {"cardinality": {"field": "src_ip"}}}),
         "passwords": terms("password", 15),
         "success": {"filter": {"term": {"eventid": "cowrie.login.success"}}},
-        "pair_count": {"cardinality": {"script": {"source": "doc['username'].size()==0||doc['password'].size()==0 ? '' : doc['username'].value + '\\u0000' + doc['password'].value"}}},
+        "pair_count": {"cardinality": {"script": {"source": "doc['username'].size() == 0 || doc['password'].size() == 0 ? '' : doc['username'].value + ' / ' + doc['password'].value"}}},
     }, logins)
     if not a or not a["pairs"]["buckets"]:
         return []
@@ -269,9 +273,11 @@ def section_credentials(os_):
 
 def section_commands(os_):
     total, a = os_.aggs({
-        "cmds": terms("input", 25, aggs={"sessions": {"cardinality": {"field": "session"}},
-                                         "ips": {"cardinality": {"field": "src_ip"}},
-                                         "tech": terms("mitre_technique", 1)}),
+        # Bare Enter presses are logged as empty input; they are not commands.
+        "cmds": {"terms": {"field": "input", "size": 25, "exclude": [""]},
+                 "aggs": {"sessions": {"cardinality": {"field": "session"}},
+                          "ips": {"cardinality": {"field": "src_ip"}},
+                          "tech": terms("mitre_technique", 1)}},
         "sessions": {"cardinality": {"field": "session"}},
     }, {"term": {"eventid": "cowrie.command.input"}})
     if not total:

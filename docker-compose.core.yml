@@ -78,9 +78,11 @@ services:
     container_name: chronos-vector-core
     restart: unless-stopped
     mem_limit: 300m
+    # Directory mount (not single files): git replaces files with new inodes, which a
+    # single-file bind mount would never see. scripts/deploy.sh restarts this service.
+    command: ["--config", "/etc/vector/vector-core.yaml"]
     volumes:
-      - ./config/vector/vector-core.yaml:/etc/vector/vector.yaml:ro
-      - ./config/vector/threat_enrichment.csv:/etc/vector/threat_enrichment.csv:ro
+      - ./config/vector:/etc/vector:ro
       - ./replay:/var/log/chronos-replay:ro
       - vector-core-data:/var/lib/vector
     ports:
