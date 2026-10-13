@@ -1,0 +1,125 @@
+# chronos-soc-core aggregator: receive sensor stream, normalize, classify, index.
+# All single-event detection logic lives here (catalog CSV + command rules below).
+# Session-level correlation lives in scripts/triage-automation.py.
+data_dir: /var/lib/vector
+
+enrichment_tables:
+  threat_catalog:
+    type: file
+    file:
+      path: /etc/vector/threat_enrichment.csv
+      encoding:
+        type: csv
+    schema:
+      severity: integer
+
+sources:
+  # Live telemetry from chronos-sensor (chronos-soc-sg admits 9002 from chronos-sensor-sg only).
+  edge_stream:
+    type: vector
+    address: 0.0.0.0:9002
+
+  # Synthetic events from scripts/replay-harness.py; indexed separately from live data.
+  replay_logs:
+    type: file
+    include:
+      - /var/log/chronos-replay/*.json
+    read_from: beginning
+
+transforms:
+  normalize_events:
+    type: remap
+    inputs:
+      - edge_stream
+      - replay_logs
+    source: |
+      # 1. Parse the raw honeypot JSON line shipped by the edge (or written by the replay harness).
+      parsed, err = parse_json(.message)
+      if err == null && is_object(parsed) {
+        . = merge(., object!(parsed))
+        del(.message)
+      }
+      del(.source_type)
+
+      # 2. Live sensor data and replay data never share an index.
+      .ingest_stream = if exists(.sensor_id) { "logs" } else { "replay" }
+
+      # 3. Event time drives the daily index, so late (buffered) events land on the right day.
+      ts_str = to_string(.timestamp) ?? ""
+      .timestamp = parse_timestamp(ts_str, "%+") ??
+        parse_timestamp(ts_str, "%Y-%m-%dT%H:%M:%SZ") ??
+        now()
+
+      # 4. Resolve the catalog key.
+      lookup_key = "unknown"
+      if exists(.eventid) {
+        .honeypot = "cowrie"
+        lookup_key = to_string(.eventid) ?? "unknown"
+      } else if .event_type == "canary_http_hit" {
+        .honeypot = "canary"
+        probe = join!(compact([to_string(.path) ?? "", to_string(.query) ?? "", to_string(.body) ?? "", to_string(.user_agent) ?? ""]), " ")
+        lookup_key = if match(probe, r'(?i)(\.\./|/etc/passwd|\$\{jndi:|/bin/(ba)?sh|\b(wget|curl)\s|phpunit|eval-stdin|\bcmd=|\bexec\b|union\s+select|<script|sleep\(|/boot\.ini|xdebug|\bthinkphp\b|invokefunction|/shell\b|base64_decode)') {
+          "canary.exploit"
+        } else if match(probe, r'(?i)(admin|config|\.env\b|\.git/|wp-(login|admin|content|includes)|xmlrpc|phpmyadmin|pma|backup|\.sql\b|\.bak\b|server-status|actuator|\.aws|\.ssh|\.ds_store|login|setup|install|\.php\b)') {
+          "canary.enumeration"
+        } else {
+          "canary.probe"
+        }
+      }
+      .detection_key = lookup_key
+
+      # 5. Catalog enrichment (severity 1-5, MITRE technique/tactic).
+      rule, err = get_enrichment_table_record("threat_catalog", {"event_id": lookup_key})
+      if err == null {
+        .severity = rule.severity
+        .mitre_technique = rule.mitre_technique
+        .mitre_tactic = rule.mitre_tactic
+        .event_description = rule.event_description
+      } else {
+        .severity = 1
+        .mitre_technique = "None"
+        .mitre_tactic = "None"
+        .event_description = "Unclassified honeypot activity"
+      }
+
+      # 6. Command refinement: every matching technique is kept; the first (highest priority) is primary.
+      if .eventid == "cowrie.command.input" || .eventid == "cowrie.command.failed" {
+        cmd = to_string(.input) ?? ""
+        techs = []
+        if match(cmd, r'authorized_keys') { techs = push(techs, "T1098.004") }
+        if match(cmd, r'\b(crontab|/etc/cron|systemctl\s+enable)') { techs = push(techs, "T1053.003") }
+        if match(cmd, r'\b(wget|curl|tftp|ftpget|lwp-download)\b|/dev/tcp/') { techs = push(techs, "T1105") }
+        if match(cmd, r'(?i)\b(xmrig|minerd|cpuminer|stratum\+tcp|nicehash|c3pool|moneroocean)\b') { techs = push(techs, "T1496") }
+        if match(cmd, r'\b(iptables|ufw|firewall-cmd|setenforce)\b') { techs = push(techs, "T1562.004") }
+        if match(cmd, r'\bhistory\s+-c\b|HISTFILE|\bchattr\b') { techs = push(techs, "T1070.003") }
+        if match(cmd, r'\bchpasswd\b|\bpasswd\b|\buseradd\b|\badduser\b') { techs = push(techs, "T1098") }
+        if match(cmd, r'/etc/(shadow|passwd|master\.passwd)') { techs = push(techs, "T1003.008") }
+        if match(cmd, r'\bchmod\s+(\+x|[0-7]{3,4})') { techs = push(techs, "T1222.002") }
+        if match(cmd, r'\b(uname|lscpu|nproc|hostname|dmidecode|lspci|free|df)\b|/proc/(cpuinfo|meminfo|version)|/etc/\S*release|/etc/issue') { techs = push(techs, "T1082") }
+        if match(cmd, r'\b(whoami|id|who|last|w)\b') { techs = push(techs, "T1033") }
+        if match(cmd, r'\b(ps|top|pstree)\b') { techs = push(techs, "T1057") }
+        if match(cmd, r'\b(ifconfig|netstat|ss|arp|route)\b|\bip\s+(a|addr|r|route)\b') { techs = push(techs, "T1016") }
+        if match(cmd, r'\b(ls|find|locate)\b') { techs = push(techs, "T1083") }
+        if length(techs) > 0 {
+          .command_techniques = techs
+          .mitre_technique = techs[0]
+        } else {
+          .command_techniques = ["T1059.004"]
+        }
+        persistent = includes(techs, "T1098.004") || includes(techs, "T1053.003") || includes(techs, "T1105") || includes(techs, "T1496")
+        if persistent { .severity = 5 }
+      }
+
+sinks:
+  opensearch_sink:
+    type: elasticsearch
+    inputs:
+      - normalize_events
+    endpoints:
+      - "http://opensearch:9200"
+    api_version: v7
+    mode: bulk
+    bulk:
+      # chronos-logs-* = live sensor data, chronos-replay-* = synthetic.
+      index: "chronos-{{ ingest_stream }}-%Y.%m.%d"
+    suppress_type_name: true

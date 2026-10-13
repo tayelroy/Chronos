@@ -1,0 +1,117 @@
+# chronos-soc-core (m7i-flex.large, 8 GB): SIEM + case management.
+# Memory budget: OpenSearch 2048m + Dashboards 600m + TheHive 1800m + Vector 300m + triage 128m ≈ 4.9 GB.
+name: chronos-core
+
+services:
+  opensearch:
+    image: opensearchproject/opensearch:2.11.1
+    container_name: chronos-opensearch
+    restart: unless-stopped
+    environment:
+      - cluster.name=chronos-cluster
+      - node.name=chronos-core-01
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
+      - DISABLE_SECURITY_PLUGIN=true
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    mem_limit: 2048m
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    ports:
+      - "127.0.0.1:9200:9200"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9200/_cluster/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:2.11.1
+    container_name: chronos-dashboards
+    restart: unless-stopped
+    environment:
+      - 'OPENSEARCH_HOSTS=["http://opensearch:9200"]'
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
+    mem_limit: 600m
+    ports:
+      - "127.0.0.1:5601:5601"
+    depends_on:
+      opensearch:
+        condition: service_healthy
+
+  thehive:
+    image: strangebee/thehive:5.2
+    container_name: chronos-thehive
+    restart: unless-stopped
+    command:
+      - --secret
+      - "${THEHIVE_SECRET_KEY:?set THEHIVE_SECRET_KEY in .env}"
+      - --no-cql-wait
+      - --bdb-directory
+      - /data/db
+      - --storage-directory
+      - /data/files
+      - --index-backend
+      - elasticsearch
+      - --es-hostnames
+      - opensearch
+      - --no-config-cortex
+    mem_limit: 1800m
+    volumes:
+      - thehive-data:/data
+    ports:
+      - "127.0.0.1:9000:9000"
+    depends_on:
+      opensearch:
+        condition: service_healthy
+
+  vector-core:
+    image: timberio/vector:0.34.1-alpine
+    container_name: chronos-vector-core
+    restart: unless-stopped
+    mem_limit: 300m
+    # Directory mount (not single files): git replaces files with new inodes, which a
+    # single-file bind mount would never see. scripts/deploy.sh restarts this service.
+    command: ["--config", "/etc/vector/vector-core.yaml"]
+    volumes:
+      - ./config/vector:/etc/vector:ro
+      - ./replay:/var/log/chronos-replay:ro
+      - vector-core-data:/var/lib/vector
+    ports:
+      # Sensor telemetry. chronos-soc-sg admits 9002 only from chronos-sensor-sg.
+      - "0.0.0.0:9002:9002"
+    depends_on:
+      opensearch:
+        condition: service_healthy
+
+  # Session-level triage loop. Started after scripts/core-bootstrap.py has written THEHIVE_API_KEY to .env.
+  triage:
+    build:
+      context: ./scripts
+      dockerfile: Dockerfile.triage
+    container_name: chronos-triage
+    restart: unless-stopped
+    mem_limit: 128m
+    environment:
+      - OPENSEARCH_HOST=http://opensearch:9200
+      - THEHIVE_HOST=http://thehive:9000
+      - THEHIVE_API_KEY=${THEHIVE_API_KEY:-}
+    command: ["--loop", "120"]
+    depends_on:
+      opensearch:
+        condition: service_healthy
+      thehive:
+        condition: service_started
+
+volumes:
+  opensearch-data:
+  thehive-data:
+  vector-core-data:

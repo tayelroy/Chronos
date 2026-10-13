@@ -1,0 +1,33 @@
+# chronos-sensor shipper: tail honeypot JSON logs, forward raw lines to the core.
+# No parsing here; the sensor is assumed hostile and stays dumb. Detection lives on the core.
+data_dir: /var/lib/vector
+
+sources:
+  honeypot_logs:
+    type: file
+    include:
+      - /var/log/cowrie/cowrie.json*
+      - /var/log/canary/*.json
+    # Applies only to files without a stored checkpoint; checkpoints persist in data_dir.
+    read_from: beginning
+
+transforms:
+  tag_sensor:
+    type: remap
+    inputs:
+      - honeypot_logs
+    source: |
+      .sensor_id = "aws-edge-t4g-01"
+      .cloud_region = "us-east-1"
+
+sinks:
+  to_soc_core:
+    type: vector
+    inputs:
+      - tag_sensor
+    address: "${CHRONOS_CORE_ADDR}"
+    # Core is stopped part-time to save cost: spool to disk and block instead of dropping.
+    buffer:
+      type: disk
+      max_size: 1073741824
+      when_full: block

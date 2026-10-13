@@ -14,8 +14,8 @@ file_handler = logging.FileHandler(log_file)
 file_handler.setFormatter(logging.Formatter('%(message)s'))
 logger.addHandler(file_handler)
 
-@app.route('/', defaults={'path': ''}, methods=['GET', 'POST', 'PUT', 'DELETE'])
-@app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE'])
+@app.route('/', defaults={'path': ''}, methods=['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS', 'PATCH'])
+@app.route('/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS', 'PATCH'])
 def catch_all(path):
     log_entry = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -23,6 +23,9 @@ def catch_all(path):
         "src_ip": request.remote_addr,
         "method": request.method,
         "path": f"/{path}",
+        "query": request.query_string.decode("utf-8", errors="replace")[:4096],
+        # Exploit payloads usually ride in the body; read at most 2 KB so a large POST cannot exhaust memory.
+        "body": request.stream.read(2048).decode("utf-8", errors="replace"),
         "user_agent": request.headers.get('User-Agent', 'Unknown'),
         "headers": dict(request.headers)
     }

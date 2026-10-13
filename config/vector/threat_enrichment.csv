@@ -1,0 +1,22 @@
+event_id,severity,mitre_technique,mitre_tactic,event_description
+cowrie.session.connect,1,T1595,Reconnaissance,Inbound honeypot connection
+cowrie.client.version,1,T1592.002,Reconnaissance,Attacker SSH client identification
+cowrie.client.kex,1,T1592.002,Reconnaissance,Attacker SSH key-exchange fingerprint (HASSH)
+cowrie.client.size,1,None,None,Terminal size negotiation
+cowrie.session.params,1,None,None,Session parameters
+cowrie.login.failed,2,T1110.001,Credential Access,SSH/Telnet password guessing attempt
+cowrie.login.success,4,T1078.001,Initial Access,Successful login with default or weak credentials
+cowrie.command.input,4,T1059.004,Execution,Shell command executed
+cowrie.command.success,1,None,None,Cowrie internal command acknowledgement
+cowrie.telnet.option,1,None,None,Telnet option negotiation
+cowrie.command.failed,3,T1059.004,Execution,Unrecognized shell command
+cowrie.session.file_download,5,T1105,Command and Control,Tool download staged
+cowrie.session.file_download.failed,4,T1105,Command and Control,Tool download attempted
+cowrie.session.file_upload,5,T1105,Command and Control,Payload uploaded over SSH/SCP
+cowrie.direct-tcpip.request,3,T1090,Command and Control,SSH tunnel / proxy request
+cowrie.direct-tcpip.data,3,T1090,Command and Control,Data sent through SSH tunnel
+cowrie.log.closed,1,None,None,TTY log closed
+cowrie.session.closed,1,None,None,Session closed
+canary.probe,2,T1595.002,Reconnaissance,HTTP scan or crawl hit
+canary.enumeration,3,T1595.003,Reconnaissance,HTTP sensitive path / wordlist enumeration
+canary.exploit,4,T1190,Initial Access,HTTP exploit payload attempt
