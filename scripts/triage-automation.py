@@ -28,7 +28,8 @@ THEHIVE_HOST = os.getenv("THEHIVE_HOST", "http://localhost:9000")
 THEHIVE_API_KEY = os.getenv("THEHIVE_API_KEY", "")
 
 ALERT_TYPE = "honeypot-session"
-ALERT_SOURCE = "chronos-cowrie"
+LIVE_SOURCE = "chronos-cowrie"
+REPLAY_SOURCE = "chronos-replay"  # synthetic sessions from chronos-replay-*; kept apart from live alerts
 # Chronos severity (1-5) -> TheHive severity (1 low .. 4 critical)
 THEHIVE_SEVERITY = {1: 1, 2: 1, 3: 2, 4: 3, 5: 4}
 MAX_SESSIONS_PER_RUN = 500
@@ -79,14 +80,14 @@ def thehive(method: str, path: str, **kwargs) -> requests.Response:
     return requests.request(method, f"{THEHIVE_HOST}{path}", headers=headers, timeout=30, **kwargs)
 
 
-def existing_source_refs(refs: List[str]) -> set:
+def existing_source_refs(refs: List[str], source: str) -> set:
     found = set()
     for i in range(0, len(refs), 200):
         chunk = refs[i:i + 200]
         query = {"query": [
             {"_name": "listAlert"},
             {"_name": "filter", "_and": [
-                {"_eq": {"_field": "source", "_value": ALERT_SOURCE}},
+                {"_eq": {"_field": "source", "_value": source}},
                 {"_in": {"_field": "sourceRef", "_values": chunk}},
             ]},
             {"_name": "page", "from": 0, "to": len(chunk), "extraData": []},
@@ -104,7 +105,7 @@ def code_block(text: str) -> str:
     return f"{fence}text\n{text}\n{fence}"
 
 
-def build_alert(session: str, events: List[Dict[str, Any]], min_severity: int) -> Dict[str, Any]:
+def build_alert(session: str, events: List[Dict[str, Any]], min_severity: int, source: str) -> Dict[str, Any]:
     first = events[0]
     src_ip = first.get("src_ip", "0.0.0.0")
     trigger = next(e for e in events if e.get("severity", 0) >= min_severity)
@@ -120,7 +121,8 @@ def build_alert(session: str, events: List[Dict[str, Any]], min_severity: int) -
     asn = first.get("as", {}) or {}
     client = next((e.get("version") for e in events if e.get("eventid") == "cowrie.client.version"), None)
     hassh = next((e.get("hassh") for e in events if e.get("eventid") == "cowrie.client.kex"), None)
-    worst = max(events, key=lambda e: e.get("severity", 0))
+    # Prefer the concrete outcome (download, upload, login) over the command that caused it when severities tie.
+    worst = max(events, key=lambda e: (e.get("severity", 0), e.get("eventid") != "cowrie.command.input"))
 
     rows = [
         ("Session", session),
@@ -162,14 +164,17 @@ def build_alert(session: str, events: List[Dict[str, Any]], min_severity: int) -
     observables += [{"dataType": "hash", "data": h, "tags": ["payload"]} for h in hashes]
 
     tags = ["chronos", "honeypot:cowrie", f"chronos-severity:{max_sev}"] + techniques
+    if source == REPLAY_SOURCE:
+        tags.append("synthetic")
     if geo.get("country_iso_code"):
         tags.append(f"country:{geo['country_iso_code']}")
 
     return {
         "type": ALERT_TYPE,
-        "source": ALERT_SOURCE,
+        "source": source,
         "sourceRef": session,
-        "title": f"[Chronos] {worst.get('event_description', 'Honeypot session')} from {src_ip}",
+        "title": f"[Chronos] {worst.get('event_description', 'Honeypot session')} "
+                 f"({worst.get('mitre_technique', 'n/a')}) from {src_ip}",
         "description": "\n\n".join(desc),
         "severity": THEHIVE_SEVERITY.get(max_sev, 2),
         "date": int(parse_ts(trigger["timestamp"]).timestamp() * 1000),
@@ -194,7 +199,8 @@ def run_once(args) -> int:
     if not sessions:
         print("[*] No sessions at or above severity threshold.")
         return 0
-    already = existing_source_refs(sessions) if not args.dry_run else set()
+    source = REPLAY_SOURCE if args.index.startswith("chronos-replay") else LIVE_SOURCE
+    already = existing_source_refs(sessions, source) if not args.dry_run else set()
     pending = [s for s in sessions if s not in already][:MAX_SESSIONS_PER_RUN]
     print(f"[*] {len(sessions)} candidate sessions, {len(already)} already alerted, {len(pending)} to evaluate")
     if not pending:
@@ -214,7 +220,7 @@ def run_once(args) -> int:
         idle = now - parse_ts(events[-1]["timestamp"]).timestamp()
         if not closed and idle < args.settle:
             continue
-        alert = build_alert(session, events, args.min_severity)
+        alert = build_alert(session, events, args.min_severity, source)
         trigger_ts = alert.pop("_trigger_ts")
         if args.dry_run:
             print(f"[DRY-RUN] {alert['title']} (sourceRef={session}, severity={alert['severity']})")
