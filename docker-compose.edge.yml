@@ -2,39 +2,59 @@
 # Host sshd must listen on 22222 so Cowrie can own :22. Admin access is SSM only.
 name: chronos-edge
 
+# Shared hardening: the decoys face the internet and must assume an exploit in
+# Cowrie/Twisted/Flask is possible. No capabilities, no privilege escalation,
+# read-only root filesystem; only the mounted log/state paths are writable.
+x-hardened: &hardened
+  restart: unless-stopped
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  read_only: true
+  pids_limit: 128
+
 services:
   cowrie:
+    <<: *hardened
     image: cowrie/cowrie:latest
     container_name: chronos-edge-cowrie
-    restart: unless-stopped
     mem_limit: 300m
     environment:
       - COWRIE_TELNET_ENABLED=yes
       - COWRIE_HONEYPOT_HOSTNAME=svr04
+      # wget/curl/ftpget/tftp/nc really fetch so payloads can be captured; cap each transfer at 10 MB
+      # so a bot cannot fill the sensor disk.
+      - COWRIE_HONEYPOT_DOWNLOAD_LIMIT_SIZE=10485760
     ports:
       - "22:2222"
       - "23:2223"
+    tmpfs:
+      - /tmp
+      - /cowrie/cowrie-git/var/run
     volumes:
-      # Host dirs must be owned by the cowrie uid (999); see scripts/sensor-setup.sh.
+      # Host dirs must be owned by the cowrie uid (999); scripts/deploy.sh sets this.
       - ./logs/cowrie:/cowrie/cowrie-git/var/log/cowrie
+      # SSH host keys and other state survive container re-creation (stable fingerprint).
+      - cowrie-state:/cowrie/cowrie-git/var/lib/cowrie
       - ./logs/cowrie-tty:/cowrie/cowrie-git/var/lib/cowrie/tty
       - ./logs/cowrie-downloads:/cowrie/cowrie-git/var/lib/cowrie/downloads
 
   canary_http:
+    <<: *hardened
     build:
       context: ./honeypots/canary_http
     container_name: chronos-edge-canary
-    restart: unless-stopped
     mem_limit: 100m
+    tmpfs:
+      - /tmp
     ports:
       - "80:8080"
     volumes:
       - ./logs/canary:/app/logs
 
   vector-edge:
+    <<: *hardened
     image: timberio/vector:0.34.1-alpine
     container_name: chronos-edge-vector
-    restart: unless-stopped
     mem_limit: 150m
     environment:
       - CHRONOS_CORE_ADDR=${CHRONOS_CORE_ADDR:?set CHRONOS_CORE_ADDR in .env (core private ip:9002)}
@@ -49,3 +69,4 @@ services:
 
 volumes:
   vector-edge-data:
+  cowrie-state:

@@ -80,7 +80,9 @@ if ! swapon --show | grep -q /swapfile; then
   grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
 fi
 mkdir -p logs/cowrie logs/cowrie-tty logs/cowrie-downloads logs/canary
+# Containers run as non-root: cowrie uid 999, canary uid 10001 (honeypots/canary_http/Dockerfile).
 chown -R 999:999 logs/cowrie logs/cowrie-tty logs/cowrie-downloads
+chown -R 10001:10001 logs/canary
 echo 'CHRONOS_CORE_ADDR=$CORE_IP:9002' > .env
 docker compose -f docker-compose.edge.yml up -d --build --remove-orphans
 docker compose -f docker-compose.edge.yml restart vector-edge  # reload shipper config; checkpoints persist
