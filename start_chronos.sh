@@ -79,4 +79,11 @@ check_service "OpenSearch API" "http://localhost:9200/_cluster/health" "$PID_OPE
 
 echo -e "\n[Tunnels active on 9000, 5601, 9200. Keep this terminal open; Ctrl+C closes them.]"
 echo "[Cost: the core is ~\$0.10/h while running. ./stop_chronos.sh stops it; the sensor keeps collecting.]"
-wait "$PID_THEHIVE" "$PID_DASHBOARDS" "$PID_OPENSEARCH"
+
+# SSM closes idle sessions (20 min by default); reopen any tunnel that drops until Ctrl+C.
+while :; do
+  sleep 10
+  kill -0 "$PID_THEHIVE" 2>/dev/null || { tunnel 9000; PID_THEHIVE=$!; echo "[*] $(date +%T) reopened tunnel 9000"; }
+  kill -0 "$PID_DASHBOARDS" 2>/dev/null || { tunnel 5601; PID_DASHBOARDS=$!; echo "[*] $(date +%T) reopened tunnel 5601"; }
+  kill -0 "$PID_OPENSEARCH" 2>/dev/null || { tunnel 9200; PID_OPENSEARCH=$!; echo "[*] $(date +%T) reopened tunnel 9200"; }
+done
