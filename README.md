@@ -38,6 +38,7 @@ Design rules:
 3. **Events → alerts → cases.** On a honeypot every event is hostile, so per-event alerts are noise. `scripts/triage-automation.py` raises **one TheHive alert per Cowrie session** that reaches severity ≥ 4 (successful login onwards). `sourceRef` is the Cowrie session id, so re-runs never duplicate. Analysts promote alerts to cases in TheHive.
 4. **Synthetic data never mixes with live data.** The replay harness writes to `replay/` on the core and is indexed into `chronos-replay-*`. Live sensor events go to `chronos-logs-*`.
 5. **Attacker strings are untrusted.** Commands and credentials are placed in fenced code blocks or escaped code spans in TheHive alerts and in the findings report.
+6. **The sensor can't be used as compute.** Cowrie emulates commands (nothing an attacker types executes) and fakes SSH port-forwarding. Decoy containers run non-root with no capabilities, `no-new-privileges` and read-only root filesystems. Cowrie's real fetches (`wget`/`curl`/`nc`, used for payload capture) are capped at 10 MB. `chronos-sensor-sg` egress allows only TCP 80/443 (payload capture, SSM, image pulls) and 9002 to the core's security group. IMDSv2 with hop limit 1 keeps containers away from instance credentials.
 
 ### Data model (OpenSearch)
 
@@ -108,17 +109,18 @@ The script exits non-zero if any section has no data.
 
 ---
 
-## Administration (SSM quick reference)
+## Administration
+
+Day-to-day commands live in [`COMMANDS.md`](COMMANDS.md) (`cat COMMANDS.md`). The essentials:
 
 ```bash
-./start_chronos.sh                      # start core containers + tunnels for 9000 / 5601 / 9200
-
-aws ssm start-session --target <chronos-sensor-instance-id>
-aws ssm start-session --target <chronos-soc-core-instance-id>
-aws ssm start-session --target <chronos-soc-core-instance-id> \
-  --document-name AWS-StartPortForwardingSession \
-  --parameters '{"portNumber":["9000"],"localPortNumber":["9000"]}'
+export AWS_PROFILE=chronos        # least-privilege IAM user chronos-operator (config/iam/chronos-operator-policy.json)
+./start_chronos.sh                # start both instances if stopped, compose up both, SSM tunnels 9000 / 5601 / 9200
+./stop_chronos.sh                 # stop the core only; the sensor keeps collecting and buffers events
+./stop_chronos.sh --all           # stop both instances
 ```
+
+`start_chronos.sh`, `stop_chronos.sh` and `scripts/deploy.sh` share `scripts/lib/ssm.sh` (SSM `send-command` runner, wait-for-SSM, start-if-stopped). The `chronos-operator` IAM user can only: describe EC2/SSM, start/stop/reboot the two Chronos instances, edit the two Chronos security groups, and open SSM sessions or send commands to those two instances.
 
 ---
 

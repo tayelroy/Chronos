@@ -1,0 +1,63 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadOnlyLookups",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:Describe*",
+        "ssm:DescribeInstanceInformation",
+        "ssm:DescribeSessions",
+        "ssm:GetCommandInvocation",
+        "ssm:ListCommandInvocations",
+        "ssm:ListCommands",
+        "pricing:GetProducts",
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "StartStopChronosInstances",
+      "Effect": "Allow",
+      "Action": ["ec2:StartInstances", "ec2:StopInstances", "ec2:RebootInstances"],
+      "Resource": [
+        "arn:aws:ec2:us-east-1:846797578839:instance/i-073658c52d98d9975",
+        "arn:aws:ec2:us-east-1:846797578839:instance/i-024b46954f573b978"
+      ]
+    },
+    {
+      "Sid": "ManageChronosSecurityGroups",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:RevokeSecurityGroupIngress",
+        "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:RevokeSecurityGroupEgress",
+        "ec2:UpdateSecurityGroupRuleDescriptionsIngress",
+        "ec2:UpdateSecurityGroupRuleDescriptionsEgress"
+      ],
+      "Resource": [
+        "arn:aws:ec2:us-east-1:846797578839:security-group/sg-0de72f02ad7b38604",
+        "arn:aws:ec2:us-east-1:846797578839:security-group/sg-0c332fb583e9fa744"
+      ]
+    },
+    {
+      "Sid": "SsmOnChronosInstancesOnly",
+      "Effect": "Allow",
+      "Action": ["ssm:StartSession", "ssm:SendCommand"],
+      "Resource": [
+        "arn:aws:ec2:us-east-1:846797578839:instance/i-073658c52d98d9975",
+        "arn:aws:ec2:us-east-1:846797578839:instance/i-024b46954f573b978",
+        "arn:aws:ssm:us-east-1::document/AWS-RunShellScript",
+        "arn:aws:ssm:us-east-1::document/AWS-StartPortForwardingSession",
+        "arn:aws:ssm:us-east-1:846797578839:document/SSM-SessionManagerRunShell"
+      ]
+    },
+    {
+      "Sid": "ManageOwnSsmSessions",
+      "Effect": "Allow",
+      "Action": ["ssm:TerminateSession", "ssm:ResumeSession"],
+      "Resource": "arn:aws:ssm:*:*:session/${aws:username}-*"
+    }
+  ]
+}

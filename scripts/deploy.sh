@@ -4,35 +4,15 @@
 #   scripts/deploy.sh sensor [git-ref]   # Cowrie + canary + Vector shipper on chronos-sensor
 # The instance pulls <git-ref> (default: current local branch) from origin, so push first.
 set -euo pipefail
+cd "$(dirname "$0")/.."
+# shellcheck source=lib/ssm.sh
+source scripts/lib/ssm.sh
 
-SOC_ID="i-073658c52d98d9975"
-SENSOR_ID="i-024b46954f573b978"
-REMOTE_DIR="/home/ssm-user/Chronos"
+SOC_ID="$CHRONOS_SOC_ID"
+SENSOR_ID="$CHRONOS_SENSOR_ID"
+REMOTE_DIR="$CHRONOS_REMOTE_DIR"
 TARGET="${1:?usage: deploy.sh core|sensor [git-ref]}"
 REF="${2:-$(git rev-parse --abbrev-ref HEAD)}"
-
-ssm_run() {  # ssm_run <instance-id> <script>; prints remote output, exits non-zero on failure
-  local id="$1" script="$2" cmd status
-  # AWS-RunShellScript uses /bin/sh (dash on Ubuntu); run the payload under bash via a quoted heredoc.
-  local params
-  params=$(python3 - "$script" <<'PY'
-import json, sys
-wrapped = "bash <<'CHRONOS_EOF'\n" + sys.argv[1] + "\nCHRONOS_EOF"
-print(json.dumps({"commands": [wrapped], "executionTimeout": ["1800"]}))
-PY
-)
-  cmd=$(aws ssm send-command --instance-ids "$id" --document-name AWS-RunShellScript \
-    --parameters "$params" --query Command.CommandId --output text)
-  while :; do
-    sleep 3
-    status=$(aws ssm get-command-invocation --command-id "$cmd" --instance-id "$id" --query Status --output text 2>/dev/null || echo Pending)
-    case "$status" in Pending|InProgress|Delayed) printf . ;; *) break ;; esac
-  done
-  echo " [$status]"
-  aws ssm get-command-invocation --command-id "$cmd" --instance-id "$id" --query StandardOutputContent --output text
-  aws ssm get-command-invocation --command-id "$cmd" --instance-id "$id" --query StandardErrorContent --output text >&2
-  [[ "$status" == Success ]]
-}
 
 checkout="set -euo pipefail
 cd $REMOTE_DIR
@@ -80,7 +60,9 @@ if ! swapon --show | grep -q /swapfile; then
   grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
 fi
 mkdir -p logs/cowrie logs/cowrie-tty logs/cowrie-downloads logs/canary
+# Containers run as non-root: cowrie uid 999, canary uid 10001 (honeypots/canary_http/Dockerfile).
 chown -R 999:999 logs/cowrie logs/cowrie-tty logs/cowrie-downloads
+chown -R 10001:10001 logs/canary
 echo 'CHRONOS_CORE_ADDR=$CORE_IP:9002' > .env
 docker compose -f docker-compose.edge.yml up -d --build --remove-orphans
 docker compose -f docker-compose.edge.yml restart vector-edge  # reload shipper config; checkpoints persist
