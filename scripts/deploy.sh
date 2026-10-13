@@ -11,11 +11,18 @@ REMOTE_DIR="/home/ssm-user/Chronos"
 TARGET="${1:?usage: deploy.sh core|sensor [git-ref]}"
 REF="${2:-$(git rev-parse --abbrev-ref HEAD)}"
 
-ssm_run() {  # ssm_run <instance-id> <script>; streams stdout/stderr, exits non-zero on failure
+ssm_run() {  # ssm_run <instance-id> <script>; prints remote output, exits non-zero on failure
   local id="$1" script="$2" cmd status
+  # AWS-RunShellScript uses /bin/sh (dash on Ubuntu); run the payload under bash via a quoted heredoc.
+  local params
+  params=$(python3 - "$script" <<'PY'
+import json, sys
+wrapped = "bash <<'CHRONOS_EOF'\n" + sys.argv[1] + "\nCHRONOS_EOF"
+print(json.dumps({"commands": [wrapped], "executionTimeout": ["1800"]}))
+PY
+)
   cmd=$(aws ssm send-command --instance-ids "$id" --document-name AWS-RunShellScript \
-    --parameters "$(python3 -c 'import json,sys;print(json.dumps({"commands":[sys.argv[1]],"executionTimeout":["1800"]}))' "$script")" \
-    --query Command.CommandId --output text)
+    --parameters "$params" --query Command.CommandId --output text)
   while :; do
     sleep 3
     status=$(aws ssm get-command-invocation --command-id "$cmd" --instance-id "$id" --query Status --output text 2>/dev/null || echo Pending)

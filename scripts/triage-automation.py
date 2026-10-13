@@ -56,7 +56,9 @@ def candidate_sessions(index: str, min_severity: int, lookback: str) -> List[str
         "aggs": {"sessions": {"terms": {"field": "session", "size": 10000, "order": {"first": "asc"}},
                               "aggs": {"first": {"min": {"field": "timestamp"}}}}},
     }
-    return [b["key"] for b in os_search(index, body)["aggregations"]["sessions"]["buckets"]]
+    # No aggregations key when the index pattern matches nothing yet (fresh deployment).
+    buckets = os_search(index, body).get("aggregations", {}).get("sessions", {}).get("buckets", [])
+    return [b["key"] for b in buckets]
 
 
 def session_events(index: str, sessions: List[str]) -> Dict[str, List[Dict[str, Any]]]:
