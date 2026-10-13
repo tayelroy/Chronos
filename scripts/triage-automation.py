@@ -116,7 +116,11 @@ def build_alert(session: str, events: List[Dict[str, Any]], min_severity: int, s
     logins = [f"{e.get('username', '')}:{e.get('password', '')}" for e in events
               if e.get("eventid") in ("cowrie.login.success", "cowrie.login.failed")]
     urls = sorted({e["url"] for e in events if e.get("url")})
-    hashes = sorted({e["shasum"] for e in events if e.get("shasum")})
+    # Only transferred files are payloads; cowrie.log.closed also carries a shasum (of the ttylog itself).
+    hashes = sorted({e["shasum"] for e in events
+                     if e.get("shasum") and e.get("eventid") in ("cowrie.session.file_download", "cowrie.session.file_upload")})
+    ttylogs = [os.path.basename(e["ttylog"]) for e in events
+               if e.get("eventid") == "cowrie.log.closed" and re.fullmatch(r"[\w./-]+", str(e.get("ttylog", "")))]
     geo = first.get("geo", {}) or {}
     asn = first.get("as", {}) or {}
     client = next((e.get("version") for e in events if e.get("eventid") == "cowrie.client.version"), None)
@@ -150,14 +154,15 @@ def build_alert(session: str, events: List[Dict[str, Any]], min_severity: int, s
         desc += ["#### Client fingerprint", code_block(f"version: {client}\nhassh: {hassh}")]
     if urls or hashes:
         desc += ["#### Staged payloads", code_block("\n".join(urls + hashes))]
-    desc += [
-        "#### Recommended actions",
-        "1. Replay the session on chronos-sensor: `scripts/dfir-tools.py --parse-ttylog logs/cowrie-tty/<ttylog>` "
-        "(ttylog name is in this session's `cowrie.log.closed` event).",
-        "2. Check staged payloads: `scripts/dfir-tools.py --vt-check <sha256>` "
-        "(files are kept on chronos-sensor under `logs/cowrie-downloads/`).",
-        "3. Correlate with other sessions from the same ASN / client fingerprint in OpenSearch Dashboards.",
-    ]
+    actions = []
+    for t in ttylogs:
+        actions.append(f"Replay the session transcript (on chronos-sensor): "
+                       f"`python3 scripts/dfir-tools.py --parse-ttylog logs/cowrie-tty/{t}`")
+    for h in hashes:
+        actions.append(f"Check payload reputation: `python3 scripts/dfir-tools.py --vt-check {h}` "
+                       f"(file kept on chronos-sensor under `logs/cowrie-downloads/`)")
+    actions.append("Correlate with other sessions from the same ASN / client fingerprint in OpenSearch Dashboards.")
+    desc += ["#### Recommended actions", "\n".join(f"{i}. {a}" for i, a in enumerate(actions, 1))]
 
     observables = [{"dataType": "ip", "data": src_ip, "tags": ["attacker"]}]
     observables += [{"dataType": "url", "data": u, "tags": ["staging"]} for u in urls]

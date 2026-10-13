@@ -65,6 +65,13 @@ if ! grep -q '^Port 22222' /etc/ssh/sshd_config; then
   grep -q '^Port 22222' /etc/ssh/sshd_config || echo 'Port 22222' >> /etc/ssh/sshd_config
   systemctl restart sshd
 fi
+# Compose builds need buildx >= 0.17; the AL2023 docker package ships 0.12.
+if ! docker buildx version 2>/dev/null | grep -qE ' v0\\.(1[7-9]|[2-9][0-9])\\.'; then
+  mkdir -p /usr/local/lib/docker/cli-plugins
+  curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-buildx \
+    https://github.com/docker/buildx/releases/download/v0.37.1/buildx-v0.37.1.linux-arm64
+  chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
+fi
 # 1 GB swap: t4g.micro has 1 GB RAM.
 if ! swapon --show | grep -q /swapfile; then
   [ -f /swapfile ] || { dd if=/dev/zero of=/swapfile bs=1M count=1024 status=none; chmod 600 /swapfile; mkswap /swapfile >/dev/null; }

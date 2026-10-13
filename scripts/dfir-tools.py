@@ -7,7 +7,9 @@ computes SHA256 hashes for staged malware payloads, and optionally queries
 VirusTotal for reputation intelligence.
 """
 import os
+import re
 import sys
+import time
 import struct
 import hashlib
 import argparse
@@ -18,78 +20,58 @@ import requests
 VT_API_KEY = os.getenv("VT_API_KEY", "")
 
 
+# Cowrie ttylog record header (src/cowrie/core/ttylog.py): op, tty, length, direction, sec, usec.
+TTYLOG_HEADER = struct.Struct("<iLiiLL")
+OP_OPEN, OP_CLOSE, OP_WRITE, OP_EXEC = 1, 2, 3, 4
+TYPE_INPUT, TYPE_OUTPUT, TYPE_INTERACT = 1, 2, 3
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b[()][A-Za-z0-9]")
+
+
 def parse_ttylog(filepath: str) -> str:
     """
-    Parses Cowrie binary ttylog files (User Mode Linux format).
-    Supports 12-byte (<III) and 16-byte headers with fallback to raw decode.
-    Returns a human-readable terminal session transcript.
+    Parses a Cowrie ttylog into a readable transcript: what the attacker saw (terminal
+    output, which includes echoed typing) followed by the raw keystrokes they sent.
     """
     path = Path(filepath)
     if not path.exists():
         return f"[-] File not found: {filepath}"
-
-    with open(path, "rb") as f:
-        raw = f.read()
-
+    raw = path.read_bytes()
     if not raw:
         return "[*] Empty session log."
 
-    # Strategy 1: Standard 12-byte UML header (<III: sec, usec, length)
-    transcript_12: list[str] = []
+    output, keystrokes = [], []
+    start = end = None
     idx = 0
-    valid_12 = True
-    while idx + 12 <= len(raw):
-        sec, usec, length = struct.unpack("<III", raw[idx:idx + 12])
-        idx += 12
-        if length < 0 or length > (len(raw) - idx):
-            valid_12 = False
-            break
+    while idx + TTYLOG_HEADER.size <= len(raw):
+        op, _tty, length, direction, sec, usec = TTYLOG_HEADER.unpack_from(raw, idx)
+        idx += TTYLOG_HEADER.size
+        if op not in (OP_OPEN, OP_CLOSE, OP_WRITE, OP_EXEC) or length < 0 or idx + length > len(raw):
+            return f"[-] {filepath} is not a Cowrie ttylog (bad record at byte {idx - TTYLOG_HEADER.size})"
         data = raw[idx:idx + length]
         idx += length
-        transcript_12.append(data.decode("utf-8", errors="replace"))
+        ts = sec + usec / 1_000_000
+        start = ts if start is None else start
+        end = ts
+        if op != OP_WRITE:
+            continue
+        text = data.decode("utf-8", errors="replace")
+        if direction == TYPE_OUTPUT:
+            output.append(text)
+        elif direction == TYPE_INPUT:
+            keystrokes.append((ts, text))
 
-    if valid_12 and idx == len(raw) and transcript_12:
-        reconstructed = "".join(transcript_12)
-        return (
-            f"==================================================\n"
-            f"Chronos Forensic Session Transcript (12B UML)\n"
-            f"File: {filepath} ({len(raw)} bytes)\n"
-            f"==================================================\n"
-            f"{reconstructed}"
-        )
-
-    # Strategy 2: 16-byte UML header (<IIII: sec, usec, length, type)
-    transcript_16: list[str] = []
-    idx = 0
-    valid_16 = True
-    while idx + 16 <= len(raw):
-        sec, usec, length = struct.unpack("<III", raw[idx:idx + 12])
-        idx += 16
-        if length < 0 or length > (len(raw) - idx):
-            valid_16 = False
-            break
-        data = raw[idx:idx + length]
-        idx += length
-        transcript_16.append(data.decode("utf-8", errors="replace"))
-
-    if valid_16 and idx == len(raw) and transcript_16:
-        reconstructed = "".join(transcript_16)
-        return (
-            f"==================================================\n"
-            f"Chronos Forensic Session Transcript (16B UML)\n"
-            f"File: {filepath} ({len(raw)} bytes)\n"
-            f"==================================================\n"
-            f"{reconstructed}"
-        )
-
-    # Strategy 3: Fallback raw stream decode
-    reconstructed = raw.decode("utf-8", errors="replace")
+    transcript = ANSI_ESCAPE.sub("", "".join(output)).replace("\r\n", "\n").replace("\r", "")
+    typed = "".join(t for _, t in keystrokes).replace("\r", "\n")
+    duration = (end - start) if start is not None else 0.0
     return (
-        f"==================================================\n"
-        f"Chronos Forensic Session Transcript (Raw Stream)\n"
-        f"File: {filepath} ({len(raw)} bytes)\n"
-        f"==================================================\n"
-        f"{reconstructed}"
+        "==================================================\n"
+        "Chronos Forensic Session Transcript (Cowrie ttylog)\n"
+        f"File    : {filepath} ({len(raw)} bytes)\n"
+        f"Started : {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(start or 0))} UTC, duration {duration:.1f}s\n"
+        "==================================================\n"
+        f"{transcript}\n"
+        "---------------- attacker keystrokes ----------------\n"
+        f"{typed}\n"
     )
 
 
