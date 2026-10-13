@@ -109,17 +109,18 @@ The script exits non-zero if any section has no data.
 
 ---
 
-## Administration (SSM quick reference)
+## Administration
+
+Day-to-day commands live in [`COMMANDS.md`](COMMANDS.md) (`cat COMMANDS.md`). The essentials:
 
 ```bash
-./start_chronos.sh                      # start core containers + tunnels for 9000 / 5601 / 9200
-
-aws ssm start-session --target <chronos-sensor-instance-id>
-aws ssm start-session --target <chronos-soc-core-instance-id>
-aws ssm start-session --target <chronos-soc-core-instance-id> \
-  --document-name AWS-StartPortForwardingSession \
-  --parameters '{"portNumber":["9000"],"localPortNumber":["9000"]}'
+export AWS_PROFILE=chronos        # least-privilege IAM user chronos-operator (config/iam/chronos-operator-policy.json)
+./start_chronos.sh                # start both instances if stopped, compose up both, SSM tunnels 9000 / 5601 / 9200
+./stop_chronos.sh                 # stop the core only; the sensor keeps collecting and buffers events
+./stop_chronos.sh --all           # stop both instances
 ```
+
+`start_chronos.sh`, `stop_chronos.sh` and `scripts/deploy.sh` share `scripts/lib/ssm.sh` (SSM `send-command` runner, wait-for-SSM, start-if-stopped). The `chronos-operator` IAM user can only: describe EC2/SSM, start/stop/reboot the two Chronos instances, edit the two Chronos security groups, and open SSM sessions or send commands to those two instances.
 
 ---
 
