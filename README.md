@@ -12,8 +12,8 @@ A lightweight, workplace-style SOC on two AWS EC2 instances: an internet-facing 
          ▼
 ┌──────────────────────────────────────────┐
 │  chronos-sensor  (t4g.micro, AL2023)     │  assumed-compromised, disposable
-│  ├─ Cowrie SSH/Telnet  (:22, :23)        │  host sshd moved to :22222 (SSM-only admin)
-│  ├─ Canary HTTP        (:80)             │
+│  ├─ Cowrie SSH/Telnet  (:22, :23)        │  host sshd moved to :22222 (SSM-only admin); breadcrumbs
+│  ├─ Canary HTTP        (:80)             │  per-IP server personas; honeytoken bait
 │  └─ Vector edge        tail → disk buffer│  ships raw JSON lines, no parsing
 └──────────────┬───────────────────────────┘
                │ :9002 private IP, chronos-soc-sg admits chronos-sensor-sg only
@@ -24,7 +24,8 @@ A lightweight, workplace-style SOC on two AWS EC2 instances: an internet-facing 
 │  ├─ OpenSearch 2.11 template, GeoIP, ISM │  chronos-logs-* (live) / chronos-replay-* (synthetic)
 │  ├─ OpenSearch Dashboards (:5601)        │
 │  ├─ TheHive 5.2 (:9000)                  │  one alert per attacker session
-│  └─ triage loop                          │  OpenSearch → TheHive, idempotent by session
+│  ├─ triage loop                          │  OpenSearch → TheHive, idempotent by session
+│  └─ honeytoken poller                    │  honeytoken account CloudTrail → Vector, SNS email
 └──────────────────────────────────────────┘
                │ SSM port forwarding (outbound TLS only)
                ▼
@@ -51,8 +52,41 @@ Design rules:
 | `mitre_technique`, `mitre_tactic`, `command_techniques` | keyword | primary technique, and every technique a command matched |
 | `username`, `password`, `input` | keyword | credentials and shell commands |
 | `path`, `query`, `body`, `user_agent`, `headers` | keyword / flat_object | canary HTTP requests |
+| `persona`, `status` | keyword / integer | canary persona that answered (`iis`, `apache-php`, `nginx`, `router-boa`) and the HTTP status it returned |
+| `bait`, `honeytoken_served` | keyword / boolean | canary bait file served (`dotenv`, `wp-config`, `git`) and whether the response contained its AWS key |
 
 GeoIP uses the GeoLite2 City/ASN databases bundled with OpenSearch 2.11.1, built in Nov 2023. Indices are deleted after 60 days by the `chronos-retention` ISM policy.
+
+## Experiments
+
+The sensor runs two experiments on bot behaviour. Results land in the last two sections of the findings report.
+
+**HTTP server personas.** `honeypots/canary_http/app.py` pins each source IP (by sha256) to one of four personas: IIS 10, Apache 2.4 with PHP (answers the PHPUnit `eval-stdin.php` RCE probe as if vulnerable), nginx 1.18, or a Boa GPON router login (`/boaform/admin/formLogin`, `formPing`). Personas differ only in fingerprint (`Server` header, default page, 404 page) and product pages; unknown paths return the persona's 404. Because assignment is random per IP, scanners that ignore the fingerprint hit every product path family at the same rate across personas. A persona pulling ahead on its own family means the scanners adapt. Adding or removing a persona reassigns every IP, so start a new analysis window when `PERSONAS` changes.
+
+**Honeytokens and breadcrumbs.** Every bait carries its own AWS key pair, so a key-use alert names the file that leaked:
+
+| Bait | Where | Variables |
+| :--- | :--- | :--- |
+| `GET /.env` | canary, Laravel-style `.env` | `HONEYTOKEN_DOTENV_AWS_KEY_ID`, `HONEYTOKEN_DOTENV_AWS_SECRET` |
+| `GET /wp-config.php.bak` | canary, WordPress config with WP Offload Media keys | `HONEYTOKEN_WPCONFIG_AWS_*` |
+| `GET /.git/…` | canary, dumpable repository (loose objects + index); the key is only in the committed `.env.production` blob, so it shows how deep each dumper goes | `HONEYTOKEN_GIT_AWS_*` |
+| `/root/.aws/credentials` | Cowrie fake filesystem, next to a `/root/.bash_history` that points at `deploy@192.168.50.12` and `aws s3` commands | `HONEYTOKEN_COWRIE_AWS_*` |
+
+`honeypots/cowrie/start-cowrie.py` wraps Cowrie's entrypoint: it copies the image's own `fs.pickle`, plants the breadcrumbs, and execs `twistd`. Bait with no key pair configured stays off (404 on the canary, no `/root/.aws` in Cowrie); `/root/.bash_history` is always planted. The fake internal hosts (`192.168.50.0/24`) are outside the VPC and Docker ranges, so nothing real answers. Vector tags the follow-up: `canary.honeytoken` (T1552.001) when a response carried a key, and the Cowrie command rules T1552.001 (AWS credentials), T1552.003 (reading shell history) and T1021.004 (`ssh`/`scp` to `user@host`).
+
+The keys are self-hosted, so key-checking tools can't recognise them the way TruffleHog recognises canarytokens.org keys by their AWS account ID. `scripts/honeytokens-provision.sh <new-account-email> <alert-email>` (run once from the Mac with an admin `default` profile plus `chronos`; safe to re-run) sets up:
+
+| Where | What |
+| :--- | :--- |
+| AWS Organization (Chronos account = management account) | member account `chronos-honeytokens`, holding nothing but the honeytokens |
+| SCP on that account | denies every action to every IAM user in it, on top of each user's own deny-all policy |
+| Honeytoken account | one IAM user + access key per bait (`billing-api-prod`, `wp-offload-media`, `billing-deploy`, `s3-backup-sync`: the names a `GetCallerIdentity` reveals). Keys authenticate but every call is denied. |
+| Honeytoken account | role `ChronosHoneytokenReader`: `cloudtrail:LookupEvents` + `ec2:DescribeRegions`, assumable only by `ChronosCoreRole` |
+| Chronos account | role `ChronosCoreRole` on chronos-soc-core only: the core's SSM/CloudWatch policies + assume the reader role + publish to SNS topic `chronos-honeytoken-alerts` (email). The sensor keeps `ChronosEdgeSSMRole` and can reach neither. |
+
+The script writes `honeytokens.env` at the repo root (gitignored, mode 600) and finishes by proving every key authenticates and is denied `s3:ListAllMyBuckets`. Those check calls come from your IP, so run the findings report with `--exclude-ip`. Never commit `honeytokens.env`: the repo is public, the account id inside the keys would tie them to it, and GitHub scrapers would trigger them, so alerts could no longer be traced to a bait. `scripts/deploy.sh sensor` copies only the bait key pairs to the sensor; `scripts/deploy.sh core` copies only the key ids, the reader role and the topic to the core and enables the `honeytokens` compose profile.
+
+`scripts/honeytoken-poller.py` (core, every 5 minutes) assumes the reader role, looks up each key's CloudTrail event history in every enabled region, appends new events to `honeytoken/events.json` for Vector (`honeytoken.key_used`, severity 5, T1078.004) and emails a summary through SNS. Event history is free and keeps 90 days, and the poller resumes from its last successful poll, so stopping the core only delays alerts. CloudTrail delivers events about 5–15 minutes after the call. The findings report's "Key use seen in CloudTrail" table shows, for each call, whether the same IP fetched that bait and how long after the first handout it came. Harvesters often fetch and use keys from different IPs, so a use with no matching fetch is itself a finding.
 
 ---
 
@@ -104,8 +138,10 @@ This writes `reports/findings-<date>.md` with these sections:
 - top commands
 - bot families (sessions grouped by normalized command sequence) with enumeration patterns
 - canary paths and user agents
+- experiment: HTTP server personas (requests per persona, product path families per persona, top paths)
+- experiment: honeytoken bait and breadcrumbs (bait fetches, key recipients, `.git` dump depth per IP, Cowrie breadcrumb commands)
 
-The script exits non-zero if any section has no data.
+The script exits non-zero if any non-experiment section has no data. Experiment sections show `_No data yet._` until the bait is live.
 
 ---
 

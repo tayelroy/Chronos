@@ -1,5 +1,6 @@
 # chronos-soc-core (m7i-flex.large, 8 GB): SIEM + case management.
-# Memory budget: OpenSearch 2048m + Dashboards 600m + TheHive 1800m + Vector 300m + triage 128m ≈ 4.9 GB.
+# Memory budget: OpenSearch 2048m + Dashboards 600m + TheHive 1800m + Vector 300m + triage 128m
+# (+ honeytoken poller 128m when enabled) ≈ 5.0 GB.
 name: chronos-core
 
 services:
@@ -84,6 +85,7 @@ services:
     volumes:
       - ./config/vector:/etc/vector:ro
       - ./replay:/var/log/chronos-replay:ro
+      - ./honeytoken:/var/log/chronos-honeytoken:ro
       - vector-core-data:/var/lib/vector
     ports:
       # Sensor telemetry. chronos-soc-sg admits 9002 only from chronos-sensor-sg.
@@ -110,6 +112,31 @@ services:
         condition: service_healthy
       thehive:
         condition: service_started
+
+  # Honeytoken key use from the honeytoken account's CloudTrail (scripts/honeytoken-poller.py).
+  # Enabled by COMPOSE_PROFILES=honeytokens, which scripts/deploy.sh writes to .env once the
+  # HONEYTOKEN_* settings from honeytokens.env are present.
+  honeytoken-poller:
+    profiles: ["honeytokens"]
+    build:
+      context: ./scripts
+      dockerfile: Dockerfile.honeytoken
+    container_name: chronos-honeytoken-poller
+    restart: unless-stopped
+    mem_limit: 128m
+    # IMDSv2 hop limit 1: only a host-network container can reach the core's instance role.
+    network_mode: host
+    environment:
+      - AWS_REGION=us-east-1
+      - HONEYTOKEN_READER_ROLE_ARN=${HONEYTOKEN_READER_ROLE_ARN:-}
+      - HONEYTOKEN_ALERT_TOPIC_ARN=${HONEYTOKEN_ALERT_TOPIC_ARN:-}
+      - HONEYTOKEN_DOTENV_AWS_KEY_ID=${HONEYTOKEN_DOTENV_AWS_KEY_ID:-}
+      - HONEYTOKEN_WPCONFIG_AWS_KEY_ID=${HONEYTOKEN_WPCONFIG_AWS_KEY_ID:-}
+      - HONEYTOKEN_GIT_AWS_KEY_ID=${HONEYTOKEN_GIT_AWS_KEY_ID:-}
+      - HONEYTOKEN_COWRIE_AWS_KEY_ID=${HONEYTOKEN_COWRIE_AWS_KEY_ID:-}
+    volumes:
+      - ./honeytoken:/var/log/chronos-honeytoken
+    command: ["--loop", "300"]
 
 volumes:
   opensearch-data:

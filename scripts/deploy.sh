@@ -21,10 +21,29 @@ sudo -u ssm-user git checkout --quiet '$REF'
 sudo -u ssm-user git reset --quiet --hard 'origin/$REF'
 echo \"[+] $REMOTE_DIR at \$(sudo -u ssm-user git log --oneline -1)\""
 
+# Honeytoken settings live only in the gitignored local honeytokens.env (scripts/honeytokens-provision.sh;
+# the repo is public). The sensor gets the bait key pairs; the core gets key ids, the reader role and the
+# alert topic, never a secret.
+honeytoken_lines() {
+  [[ -f honeytokens.env ]] || { echo "[!] honeytokens.env not found: honeytokens stay off" >&2; return 0; }
+  grep -E "$1" honeytokens.env || true
+}
+
 case "$TARGET" in
   core)
+    CORE_HONEYTOKENS=$(honeytoken_lines '^HONEYTOKEN_([A-Z]+_AWS_KEY_ID|READER_ROLE_ARN|ALERT_TOPIC_ARN)=')
+    if grep -q '^HONEYTOKEN_READER_ROLE_ARN=.' <<<"$CORE_HONEYTOKENS"; then
+      CORE_HONEYTOKENS+=$'\nCOMPOSE_PROFILES=honeytokens'
+      echo "[*] Honeytoken poller enabled"
+    fi
     ssm_run "$SOC_ID" "$checkout
-mkdir -p replay
+mkdir -p replay honeytoken
+chown 65534:65534 honeytoken  # honeytoken poller runs as nobody
+touch .env
+sed -i '/^HONEYTOKEN_/d;/^COMPOSE_PROFILES=/d' .env
+cat >> .env <<'ENV_EOF'
+$CORE_HONEYTOKENS
+ENV_EOF
 if ! grep -q '^THEHIVE_SECRET_KEY=' .env 2>/dev/null; then
   echo \"THEHIVE_SECRET_KEY=\$(openssl rand -hex 32)\" >> .env
 fi
@@ -39,6 +58,7 @@ docker compose -f docker-compose.core.yml ps --format 'table {{.Name}}\t{{.Statu
     ;;
   sensor)
     CORE_IP=$(aws ec2 describe-instances --instance-ids "$SOC_ID" --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text)
+    HONEYTOKENS=$(honeytoken_lines '^HONEYTOKEN_(DOTENV|WPCONFIG|GIT|COWRIE)_AWS_(KEY_ID|SECRET)=')
     ssm_run "$SENSOR_ID" "$checkout
 # Real sshd off :22 so Cowrie can own it (admin access is SSM-only anyway).
 if ! grep -q '^Port 22222' /etc/ssh/sshd_config; then
@@ -63,7 +83,11 @@ mkdir -p logs/cowrie logs/cowrie-tty logs/cowrie-downloads logs/canary
 # Containers run as non-root: cowrie uid 999, canary uid 10001 (honeypots/canary_http/Dockerfile).
 chown -R 999:999 logs/cowrie logs/cowrie-tty logs/cowrie-downloads
 chown -R 10001:10001 logs/canary
-echo 'CHRONOS_CORE_ADDR=$CORE_IP:9002' > .env
+cat > .env <<'ENV_EOF'
+CHRONOS_CORE_ADDR=$CORE_IP:9002
+$HONEYTOKENS
+ENV_EOF
+chmod 600 .env
 docker compose -f docker-compose.edge.yml up -d --build --remove-orphans
 docker compose -f docker-compose.edge.yml restart vector-edge  # reload shipper config; checkpoints persist
 docker compose -f docker-compose.edge.yml ps --format 'table {{.Name}}\t{{.Status}}'

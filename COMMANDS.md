@@ -69,6 +69,18 @@ TheHive credentials [core]:
     scripts/deploy.sh core
     scripts/deploy.sh sensor
 
+Honeytokens (README "Experiments"). One-time AWS setup (admin `default` profile + `chronos`), writes ./honeytokens.env:
+
+    aws login --profile default                                  # root/admin session (AWS_PROFILE=chronos is exported)
+    ADMIN_PROFILE=default scripts/honeytokens-provision.sh <new-account-email> <alert-email>
+
+Then `scripts/deploy.sh core` and `scripts/deploy.sh sensor` copy what each side needs. Check:
+
+    curl -si http://34.235.107.113/ | grep -i '^server'          # your IP's persona
+    curl -s  http://34.235.107.113/.env | grep AWS_ACCESS        # bait on (404 page = off)
+    [sensor] docker logs chronos-edge-cowrie 2>&1 | grep start-cowrie   # breadcrumbs planted
+    [core]   docker logs --tail 20 chronos-honeytoken-poller            # CloudTrail polls and new key use
+
 ## Container status and logs
 
     [core]   docker compose -f docker-compose.core.yml ps

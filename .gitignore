@@ -2,6 +2,8 @@
 *.log
 data/
 .env
+# Honeytoken AWS key pairs; scripts/deploy.sh copies them into the sensor's .env
+honeytokens.env
 Journey.md
 docs/
 session-manager-plugin.pkg
