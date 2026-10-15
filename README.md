@@ -25,7 +25,7 @@ A lightweight, workplace-style SOC on two AWS EC2 instances: an internet-facing 
 │  ├─ OpenSearch Dashboards (:5601)        │
 │  ├─ TheHive 5.2 (:9000)                  │  one alert per attacker session
 │  ├─ triage loop                          │  OpenSearch → TheHive, idempotent by session
-│  └─ honeytoken poller                    │  honeytoken account CloudTrail → Vector, SNS email
+│  └─ honeytoken poller                    │  honeytoken account CloudTrail → Vector → TheHive
 └──────────────────────────────────────────┘
                │ SSM port forwarding (outbound TLS only)
                ▼
@@ -74,7 +74,7 @@ The sensor runs two experiments on bot behaviour. Results land in the last two s
 
 `honeypots/cowrie/start-cowrie.py` wraps Cowrie's entrypoint: it copies the image's own `fs.pickle`, plants the breadcrumbs, and execs `twistd`. Bait with no key pair configured stays off (404 on the canary, no `/root/.aws` in Cowrie); `/root/.bash_history` is always planted. The fake internal hosts (`192.168.50.0/24`) are outside the VPC and Docker ranges, so nothing real answers. Vector tags the follow-up: `canary.honeytoken` (T1552.001) when a response carried a key, and the Cowrie command rules T1552.001 (AWS credentials), T1552.003 (reading shell history) and T1021.004 (`ssh`/`scp` to `user@host`).
 
-The keys are self-hosted, so key-checking tools can't recognise them the way TruffleHog recognises canarytokens.org keys by their AWS account ID. `scripts/honeytokens-provision.sh <new-account-email> <alert-email>` (run once from the Mac with an admin `default` profile plus `chronos`; safe to re-run) sets up:
+The keys are self-hosted, so key-checking tools can't recognise them the way TruffleHog recognises canarytokens.org keys by their AWS account ID. `scripts/honeytokens-provision.sh <new-account-email>` (run once from the Mac with an admin `default` profile plus `chronos`; safe to re-run) sets up:
 
 | Where | What |
 | :--- | :--- |
@@ -82,13 +82,11 @@ The keys are self-hosted, so key-checking tools can't recognise them the way Tru
 | SCP on that account | denies every action to every IAM user in it, on top of each user's own deny-all policy |
 | Honeytoken account | one IAM user + access key per bait (`billing-api-prod`, `wp-offload-media`, `billing-deploy`, `s3-backup-sync`: the names a `GetCallerIdentity` reveals). Keys authenticate but every call is denied. |
 | Honeytoken account | role `ChronosHoneytokenReader`: `cloudtrail:LookupEvents` + `ec2:DescribeRegions`, assumable only by `ChronosCoreRole` |
-| Chronos account | role `ChronosCoreRole` on chronos-soc-core only: the core's SSM/CloudWatch policies + assume the reader role + publish to SNS topic `chronos-honeytoken-alerts` (email). The sensor keeps `ChronosEdgeSSMRole` and can reach neither. |
+| Chronos account | role `ChronosCoreRole` on chronos-soc-core only: the core's SSM/CloudWatch policies + assume the reader role. The sensor keeps `ChronosEdgeSSMRole` and can't reach the reader role. |
 
-The script writes `honeytokens.env` at the repo root (gitignored, mode 600) and finishes by proving every key authenticates and is denied `s3:ListAllMyBuckets`. Those check calls come from your IP, so run the findings report with `--exclude-ip`. Never commit `honeytokens.env`: the repo is public, the account id inside the keys would tie them to it, and GitHub scrapers would trigger them, so alerts could no longer be traced to a bait. `scripts/deploy.sh sensor` copies only the bait key pairs to the sensor; `scripts/deploy.sh core` copies only the key ids, the reader role and the topic to the core and enables the `honeytokens` compose profile.
+The script writes `honeytokens.env` at the repo root (gitignored, mode 600) and finishes by proving every key authenticates and is denied `s3:ListAllMyBuckets`. Those check calls come from your IP, so run the findings report with `--exclude-ip`. Never commit `honeytokens.env`: the repo is public, the account id inside the keys would tie them to it, and GitHub scrapers would trigger them, so alerts could no longer be traced to a bait. `scripts/deploy.sh sensor` copies only the bait key pairs to the sensor; `scripts/deploy.sh core` copies only the key ids and the reader role to the core and enables the `honeytokens` compose profile.
 
-`scripts/honeytoken-poller.py` (core, every 5 minutes) assumes the reader role, looks up each key's CloudTrail event history in every enabled region, appends new events to `honeytoken/events.json` for Vector (`honeytoken.key_used`, severity 5, T1078.004) and emails a summary through SNS. Event history is free and keeps 90 days, and the poller resumes from its last successful poll, so stopping the core only delays alerts. CloudTrail delivers events about 5–15 minutes after the call. The findings report's "Key use seen in CloudTrail" table shows, for each call, whether the same IP fetched that bait and how long after the first handout it came. Harvesters often fetch and use keys from different IPs, so a use with no matching fetch is itself a finding.
-
-Alert routing: the triage loop puts every key use into TheHive (type `honeytoken-key-use`, critical) for case handling; the SNS email is only the push notification, because TheHive is reachable only through the SSM tunnel.
+`scripts/honeytoken-poller.py` (core, every 5 minutes) assumes the reader role, looks up each key's CloudTrail event history in every enabled region and appends new events to `honeytoken/events.json` for Vector (`honeytoken.key_used`, severity 5, T1078.004). The triage loop turns them into critical TheHive alerts (type `honeytoken-key-use`). Event history is free and keeps 90 days, and the poller resumes from its last successful poll, so stopping the core only delays alerts. CloudTrail delivers events about 5–15 minutes after the call. The findings report's "Key use seen in CloudTrail" table shows, for each call, whether the same IP fetched that bait and how long after the first handout it came. Harvesters often fetch and use keys from different IPs, so a use with no matching fetch is itself a finding.
 
 ---
 

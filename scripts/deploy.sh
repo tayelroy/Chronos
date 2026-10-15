@@ -22,8 +22,8 @@ sudo -u ssm-user git reset --quiet --hard 'origin/$REF'
 echo \"[+] $REMOTE_DIR at \$(sudo -u ssm-user git log --oneline -1)\""
 
 # Honeytoken settings live only in the gitignored local honeytokens.env (scripts/honeytokens-provision.sh;
-# the repo is public). The sensor gets the bait key pairs; the core gets key ids, the reader role and the
-# alert topic, never a secret.
+# the repo is public). The sensor gets the bait key pairs; the core gets the key ids and the reader role,
+# never a secret.
 honeytoken_lines() {
   [[ -f honeytokens.env ]] || { echo "[!] honeytokens.env not found: honeytokens stay off" >&2; return 0; }
   grep -E "$1" honeytokens.env || true
@@ -31,7 +31,7 @@ honeytoken_lines() {
 
 case "$TARGET" in
   core)
-    CORE_HONEYTOKENS=$(honeytoken_lines '^HONEYTOKEN_([A-Z]+_AWS_KEY_ID|READER_ROLE_ARN|ALERT_TOPIC_ARN)=')
+    CORE_HONEYTOKENS=$(honeytoken_lines '^HONEYTOKEN_([A-Z]+_AWS_KEY_ID|READER_ROLE_ARN)=')
     if grep -q '^HONEYTOKEN_READER_ROLE_ARN=.' <<<"$CORE_HONEYTOKENS"; then
       CORE_HONEYTOKENS+=$'\nCOMPOSE_PROFILES=honeytokens'
       echo "[*] Honeytoken poller enabled"

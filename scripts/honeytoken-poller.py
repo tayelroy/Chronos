@@ -7,8 +7,8 @@ Runs on chronos-soc-core (docker-compose.core.yml, profile "honeytokens"). Each 
      core's instance role;
   2. looks up every event made with each bait's access key in every enabled region, from the last
      successful poll (minus an hour, for CloudTrail delivery delay) or the 90-day retention limit;
-  3. appends unseen events as JSON lines to <out-dir>/events.json, which Vector core tails and indexes;
-  4. emails a summary through HONEYTOKEN_ALERT_TOPIC_ARN (SNS, core instance role) when anything new arrived.
+  3. appends unseen events as JSON lines to <out-dir>/events.json, which Vector core tails and indexes.
+     scripts/triage-automation.py turns them into TheHive alerts.
 
 Event history keeps 90 days, so the core can be stopped for days and still catch up on the next start.
 State (seen event ids, last poll) lives in <out-dir>/poller-state.
@@ -111,28 +111,6 @@ def poll(role_arn, keys, out_dir, state):
     state["seen"] = {k: v for k, v in state["seen"].items() if v >= cutoff}
     state["last_poll"] = now.isoformat()
     log(f"[+] {len(regions)} regions, {len(keys)} keys, window from {start:%Y-%m-%d %H:%M}: {len(new)} new event(s)")
-    return new
-
-
-def alert(topic_arn, records):
-    by_bait = {}
-    for r in records:
-        by_bait.setdefault(r["bait"], []).append(r)
-    lines = [f"{len(records)} new honeytoken key use event(s) in CloudTrail.", ""]
-    for bait, rows in by_bait.items():
-        lines.append(f"Bait: {bait}")
-        for r in rows[:25]:
-            lines.append(f"  {r['timestamp']}  {r.get('src_ip') or r.get('source_address', '?')}  "
-                         f"{r.get('aws_event_source', '')} {r.get('aws_event_name', '')} in {r.get('aws_region', '')}"
-                         f"{'  -> ' + r['aws_error_code'] if r.get('aws_error_code') else ''}")
-            lines.append(f"      user agent: {(r.get('user_agent') or '')[:200]}")
-        if len(rows) > 25:
-            lines.append(f"  ... and {len(rows) - 25} more")
-        lines.append("")
-    lines.append("Correlate with the 'Key recipients' table: python3 scripts/findings-report.py")
-    subject = f"Chronos honeytoken used: {', '.join(sorted(by_bait))}"[:100]
-    boto3.client("sns", region_name=topic_arn.split(":")[3], config=RETRY).publish(
-        TopicArn=topic_arn, Subject=subject, Message="\n".join(lines))
 
 
 def load_state(path):
@@ -156,7 +134,6 @@ def main():
     role_arn = os.getenv("HONEYTOKEN_READER_ROLE_ARN", "").strip()
     if not role_arn:
         sys.exit("[-] HONEYTOKEN_READER_ROLE_ARN not set")
-    topic_arn = os.getenv("HONEYTOKEN_ALERT_TOPIC_ARN", "").strip()
     keys = bait_keys()
     out_dir = Path(args.out_dir)
     state_path = out_dir / "poller-state"
@@ -164,16 +141,9 @@ def main():
     while True:
         state = load_state(state_path)
         try:
-            new = poll(role_arn, keys, out_dir, state)
+            poll(role_arn, keys, out_dir, state)
             # Events are on disk before the state records them as seen, so a crash re-sends rather than drops.
-            # Alerts wait in the state until SNS accepts them, so a failed publish is retried next cycle.
-            if topic_arn:
-                state["unalerted"] = (state.get("unalerted", []) + new)[-200:]
             save_state(state_path, state)
-            if state.get("unalerted"):
-                alert(topic_arn, state["unalerted"])
-                state["unalerted"] = []
-                save_state(state_path, state)
         except Exception as e:  # keep looping through transient AWS/network errors
             log(f"[-] poll failed: {type(e).__name__}: {e}")
             if not args.loop:

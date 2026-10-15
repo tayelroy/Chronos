@@ -72,7 +72,7 @@ TheHive credentials [core]:
 Honeytokens (README "Experiments"). One-time AWS setup (admin `default` profile + `chronos`), writes ./honeytokens.env:
 
     aws login --profile default                                  # root/admin session (AWS_PROFILE=chronos is exported)
-    ADMIN_PROFILE=default scripts/honeytokens-provision.sh <new-account-email> <alert-email>
+    ADMIN_PROFILE=default scripts/honeytokens-provision.sh <new-account-email>
 
 Then `scripts/deploy.sh core` and `scripts/deploy.sh sensor` copy what each side needs. Check:
 

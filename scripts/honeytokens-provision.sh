@@ -1,17 +1,17 @@
 #!/bin/bash
 # Provision self-hosted AWS honeytoken keys. Run from the Mac; safe to re-run.
 #
-#   scripts/honeytokens-provision.sh <new-account-email> <alert-email>
+#   scripts/honeytokens-provision.sh <new-account-email>
 #
 # Identities (both must belong to the Chronos account):
-#   ADMIN_PROFILE    (default "default")  root/admin session: Organizations, Chronos IAM, SNS, instance profile.
+#   ADMIN_PROFILE    (default "default")  root/admin session: Organizations, Chronos IAM, instance profile.
 #   OPERATOR_PROFILE (default "chronos")  IAM user chronos-operator. Root can't call sts:AssumeRole, so for the
 #                    length of this run only, this user may assume the member account's OrganizationAccountAccessRole
 #                    (inline policy removed on exit).
 #
 # Chronos account: AWS Organization (if none), member account "chronos-honeytokens", SCP that denies every
 #   action to every IAM user in that account, role ChronosCoreRole (the core's current role + assume the
-#   reader role + publish alerts) swapped onto chronos-soc-core, SNS topic chronos-honeytoken-alerts + email.
+#   reader role) swapped onto chronos-soc-core. Key use reaches TheHive through Vector and the triage loop.
 # Member account: one IAM user + access key per bait, each with an inline deny-everything policy and nothing
 #   else; role ChronosHoneytokenReader (cloudtrail:LookupEvents, ec2:DescribeRegions) trusted by ChronosCoreRole.
 # Output: honeytokens.env (gitignored, mode 600). Never commit it: the account id in the keys and ARNs would let
@@ -21,14 +21,12 @@ cd "$(dirname "$0")/.."
 # shellcheck source=lib/ssm.sh
 source scripts/lib/ssm.sh
 
-ACCOUNT_EMAIL="${1:?usage: honeytokens-provision.sh <new-account-email> <alert-email>}"
-ALERT_EMAIL="${2:?usage: honeytokens-provision.sh <new-account-email> <alert-email>}"
+ACCOUNT_EMAIL="${1:?usage: honeytokens-provision.sh <new-account-email>}"
 ADMIN=(--profile "${ADMIN_PROFILE:-default}" --region us-east-1)
 OPER=(--profile "${OPERATOR_PROFILE:-chronos}" --region us-east-1)
 ACCOUNT_NAME="chronos-honeytokens"
 CORE_ROLE="ChronosCoreRole"
 READER_ROLE="ChronosHoneytokenReader"
-TOPIC_NAME="chronos-honeytoken-alerts"
 SCP_NAME="chronos-honeytokens-deny-iam-users"
 TEMP_POLICY="chronos-honeytoken-provisioning"
 # <bait>:<IAM user name>. The names are what an attacker sees from sts:GetCallerIdentity.
@@ -95,13 +93,7 @@ if [[ $(admin organizations list-targets-for-policy --policy-id "$SCP_ID" --quer
 fi
 echo "[+] SCP $SCP_NAME attached to $HT"
 
-# ---- Chronos account: alert topic, ChronosCoreRole on the core -----------------------------------------------
-TOPIC_ARN=$(admin sns create-topic --name "$TOPIC_NAME" --query TopicArn --output text)
-if [[ $(admin sns list-subscriptions-by-topic --topic-arn "$TOPIC_ARN" --query "Subscriptions[?Endpoint=='$ALERT_EMAIL'] | length(@)" --output text) == 0 ]]; then
-  admin sns subscribe --topic-arn "$TOPIC_ARN" --protocol email --notification-endpoint "$ALERT_EMAIL" >/dev/null
-  echo "[!] Confirm the SNS subscription email sent to $ALERT_EMAIL"
-fi
-
+# ---- Chronos account: ChronosCoreRole on the core -------------------------------------------------------------
 read -r ASSOC_ID CUR_PROFILE_ARN < <(admin ec2 describe-iam-instance-profile-associations \
   --filters "Name=instance-id,Values=$CHRONOS_SOC_ID" "Name=state,Values=associated" \
   --query 'IamInstanceProfileAssociations[0].[AssociationId,IamInstanceProfile.Arn]' --output text)
@@ -119,12 +111,8 @@ if ! admin iam get-role --role-name "$CORE_ROLE" >/dev/null 2>&1; then
       --policy-document "$(admin iam get-role-policy --role-name "$SRC_ROLE" --policy-name "$name" --query PolicyDocument --output json)"
   done
 fi
-admin iam put-role-policy --role-name "$CORE_ROLE" --policy-name honeytoken-poller --policy-document "{
-  \"Version\": \"2012-10-17\",
-  \"Statement\": [
-    {\"Effect\": \"Allow\", \"Action\": \"sts:AssumeRole\", \"Resource\": \"arn:aws:iam::$HT:role/$READER_ROLE\"},
-    {\"Effect\": \"Allow\", \"Action\": \"sns:Publish\", \"Resource\": \"$TOPIC_ARN\"}
-  ]}"
+admin iam put-role-policy --role-name "$CORE_ROLE" --policy-name honeytoken-poller --policy-document \
+  "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"sts:AssumeRole\",\"Resource\":\"arn:aws:iam::$HT:role/$READER_ROLE\"}]}"
 admin iam get-instance-profile --instance-profile-name "$CORE_ROLE" >/dev/null 2>&1 ||
   admin iam create-instance-profile --instance-profile-name "$CORE_ROLE" >/dev/null
 if [[ $(admin iam get-instance-profile --instance-profile-name "$CORE_ROLE" --query 'InstanceProfile.Roles | length(@)' --output text) == 0 ]]; then
@@ -135,7 +123,7 @@ if [[ "${CUR_PROFILE_ARN##*/}" != "$CORE_ROLE" ]]; then
   retry 9 admin ec2 replace-iam-instance-profile-association --association-id "$ASSOC_ID" \
     --iam-instance-profile "Name=$CORE_ROLE" >/dev/null
 fi
-echo "[+] chronos-soc-core runs as $CORE_ROLE; alerts -> $TOPIC_ARN"
+echo "[+] chronos-soc-core runs as $CORE_ROLE"
 
 # ---- Member account, via OrganizationAccountAccessRole -------------------------------------------------------
 cleanup() { admin iam delete-user-policy --user-name "$OPER_USER" --policy-name "$TEMP_POLICY" 2>/dev/null || true; }
@@ -194,7 +182,7 @@ else
 fi
 ht iam put-role-policy --role-name "$READER_ROLE" --policy-name read-event-history --policy-document \
   '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["cloudtrail:LookupEvents","ec2:DescribeRegions"],"Resource":"*"}]}'
-printf 'HONEYTOKEN_READER_ROLE_ARN=arn:aws:iam::%s:role/%s\nHONEYTOKEN_ALERT_TOPIC_ARN=%s\n' "$HT" "$READER_ROLE" "$TOPIC_ARN" >>"$NEW_ENV"
+printf 'HONEYTOKEN_READER_ROLE_ARN=arn:aws:iam::%s:role/%s\n' "$HT" "$READER_ROLE" >>"$NEW_ENV"
 mv "$NEW_ENV" "$OUT"
 chmod 600 "$OUT"
 echo "[+] Wrote $OUT"
