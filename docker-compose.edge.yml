@@ -15,7 +15,9 @@ x-hardened: &hardened
 services:
   cowrie:
     <<: *hardened
-    image: cowrie/cowrie:latest
+    # Pinned: start-cowrie.py depends on this image's fs.pickle layout and twistd path.
+    # Cowrie 3.0.15 (cowrie/cowrie:latest as of 2026-09-19); bump deliberately and re-test the breadcrumbs.
+    image: cowrie/cowrie@sha256:fc57120d88c2bfb5817f63f6c132ce5c2969b641c2f1ac67887652b6f294148d
     container_name: chronos-edge-cowrie
     mem_limit: 300m
     environment:
