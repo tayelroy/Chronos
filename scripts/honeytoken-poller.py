@@ -47,7 +47,7 @@ def bait_keys():
 
 
 def reader_session(role_arn):
-    creds = boto3.client("sts", config=RETRY).assume_role(
+    creds = boto3.client("sts", region_name="us-east-1", config=RETRY).assume_role(
         RoleArn=role_arn, RoleSessionName="chronos-honeytoken-poller", DurationSeconds=3600)["Credentials"]
     return boto3.Session(aws_access_key_id=creds["AccessKeyId"], aws_secret_access_key=creds["SecretAccessKey"],
                          aws_session_token=creds["SessionToken"])
@@ -131,7 +131,8 @@ def alert(topic_arn, records):
         lines.append("")
     lines.append("Correlate with the 'Key recipients' table: python3 scripts/findings-report.py")
     subject = f"Chronos honeytoken used: {', '.join(sorted(by_bait))}"[:100]
-    boto3.client("sns", config=RETRY).publish(TopicArn=topic_arn, Subject=subject, Message="\n".join(lines))
+    boto3.client("sns", region_name=topic_arn.split(":")[3], config=RETRY).publish(
+        TopicArn=topic_arn, Subject=subject, Message="\n".join(lines))
 
 
 def load_state(path):
@@ -165,9 +166,14 @@ def main():
         try:
             new = poll(role_arn, keys, out_dir, state)
             # Events are on disk before the state records them as seen, so a crash re-sends rather than drops.
+            # Alerts wait in the state until SNS accepts them, so a failed publish is retried next cycle.
+            if topic_arn:
+                state["unalerted"] = (state.get("unalerted", []) + new)[-200:]
             save_state(state_path, state)
-            if new and topic_arn:
-                alert(topic_arn, new)
+            if state.get("unalerted"):
+                alert(topic_arn, state["unalerted"])
+                state["unalerted"] = []
+                save_state(state_path, state)
         except Exception as e:  # keep looping through transient AWS/network errors
             log(f"[-] poll failed: {type(e).__name__}: {e}")
             if not args.loop:

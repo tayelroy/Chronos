@@ -127,7 +127,6 @@ services:
     # IMDSv2 hop limit 1: only a host-network container can reach the core's instance role.
     network_mode: host
     environment:
-      - AWS_REGION=us-east-1
       - HONEYTOKEN_READER_ROLE_ARN=${HONEYTOKEN_READER_ROLE_ARN:-}
       - HONEYTOKEN_ALERT_TOPIC_ARN=${HONEYTOKEN_ALERT_TOPIC_ARN:-}
       - HONEYTOKEN_DOTENV_AWS_KEY_ID=${HONEYTOKEN_DOTENV_AWS_KEY_ID:-}
