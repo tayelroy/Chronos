@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 # shellcheck source=scripts/lib/ssm.sh
 source scripts/lib/ssm.sh
 
-pkill -f "AWS-StartPortForwardingSession.*(9000|5601|9200)" 2>/dev/null || true
+pkill -f "AWS-StartPortForwardingSession.*(9000|5601|9200|8000)" 2>/dev/null || true
 
 ids=("$CHRONOS_SOC_ID")
 [[ "${1:-}" == "--all" ]] && ids+=("$CHRONOS_SENSOR_ID")

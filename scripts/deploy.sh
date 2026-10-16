@@ -32,20 +32,32 @@ honeytoken_lines() {
 case "$TARGET" in
   core)
     CORE_HONEYTOKENS=$(honeytoken_lines '^HONEYTOKEN_([A-Z]+_AWS_KEY_ID|READER_ROLE_ARN)=')
+    PROFILES="splunk"
     if grep -q '^HONEYTOKEN_READER_ROLE_ARN=.' <<<"$CORE_HONEYTOKENS"; then
-      CORE_HONEYTOKENS+=$'\nCOMPOSE_PROFILES=honeytokens'
+      PROFILES="honeytokens,splunk"
       echo "[*] Honeytoken poller enabled"
     fi
     ssm_run "$SOC_ID" "$checkout
-mkdir -p replay honeytoken
+mkdir -p replay honeytoken splunk
 chown 65534:65534 honeytoken  # honeytoken poller runs as nobody
+# Package the Splunk app; a bind mount into /opt/splunk breaks Splunk's startup tar step.
+rm -rf /tmp/chronos-splunk && mkdir -p /tmp/chronos-splunk
+cp -r config/splunk/chronos /tmp/chronos-splunk/chronos
+tar -czf splunk/chronos.tgz -C /tmp/chronos-splunk chronos
 touch .env
 sed -i '/^HONEYTOKEN_/d;/^COMPOSE_PROFILES=/d' .env
 cat >> .env <<'ENV_EOF'
 $CORE_HONEYTOKENS
+COMPOSE_PROFILES=$PROFILES
 ENV_EOF
 if ! grep -q '^THEHIVE_SECRET_KEY=' .env 2>/dev/null; then
   echo \"THEHIVE_SECRET_KEY=\$(openssl rand -hex 32)\" >> .env
+fi
+if ! grep -q '^SPLUNK_PASSWORD=' .env 2>/dev/null; then
+  echo \"SPLUNK_PASSWORD=Sp1-\$(openssl rand -hex 20)\" >> .env
+fi
+if ! grep -q '^SPLUNK_HEC_TOKEN=' .env 2>/dev/null; then
+  echo \"SPLUNK_HEC_TOKEN=\$(cat /proc/sys/kernel/random/uuid)\" >> .env
 fi
 chmod 600 .env
 sysctl -qw vm.max_map_count=262144

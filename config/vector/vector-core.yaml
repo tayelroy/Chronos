@@ -128,6 +128,13 @@ transforms:
         if persistent { .severity = 5 }
       }
 
+  # Splunk gets live sensor + honeytoken events only; synthetic replay never leaves OpenSearch.
+  live_only:
+    type: filter
+    inputs:
+      - normalize_events
+    condition: '.ingest_stream == "logs"'
+
 sinks:
   opensearch_sink:
     type: elasticsearch
@@ -141,3 +148,26 @@ sinks:
       # chronos-logs-* = live sensor data, chronos-replay-* = synthetic.
       index: "chronos-{{ ingest_stream }}-%Y.%m.%d"
     suppress_type_name: true
+
+  # Second SIEM: mirror the live index into Splunk over HEC. Own disk buffer that drops when full,
+  # so a Splunk outage or the splunk profile being off never backs up the OpenSearch path.
+  splunk_sink:
+    type: splunk_hec_logs
+    inputs:
+      - live_only
+    endpoint: "http://splunk:8088"
+    default_token: "${SPLUNK_HEC_TOKEN:-disabled}"
+    index: chronos
+    sourcetype: chronos:event
+    host_key: sensor_id
+    timestamp_key: timestamp
+    encoding:
+      codec: json
+    acknowledgements:
+      indexer_acknowledgements_enabled: false
+    healthcheck:
+      enabled: false
+    buffer:
+      type: disk
+      max_size: 268435456
+      when_full: drop_newest
