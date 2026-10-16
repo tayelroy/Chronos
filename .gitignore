@@ -1,13 +1,13 @@
 .DS_Store
 *.log
-data/
+/data/
 .env
 # Honeytoken AWS key pairs; scripts/deploy.sh copies them into the sensor's .env
 honeytokens.env
 Journey.md
 docs/
 session-manager-plugin.pkg
-attachments/image.png
+/attachments/
 aws/
 # Runtime data (honeypot logs on the sensor, synthetic replay on the core)
 logs/

@@ -1,0 +1,90 @@
+<dashboard version="1.1" theme="dark">
+  <label>Chronos - Detections</label>
+  <description>Honeypot detections over Chronos sensor data (index=chronos). Default window: last 30 days.</description>
+  <row>
+    <panel>
+      <title>Events by day</title>
+      <chart>
+        <search>
+          <query>index=chronos sourcetype=chronos:event | timechart span=1d count by honeypot</query>
+          <earliest>-30d@d</earliest>
+          <latest>now</latest>
+        </search>
+        <option name="charting.chart">column</option>
+        <option name="charting.chart.stackMode">stacked</option>
+        <option name="charting.legend.placement">bottom</option>
+      </chart>
+    </panel>
+    <panel>
+      <title>Key numbers</title>
+      <single>
+        <search>
+          <query>index=chronos sourcetype=chronos:event | stats dc(src_ip) as "Unique source IPs"</query>
+          <earliest>-30d@d</earliest>
+          <latest>now</latest>
+        </search>
+      </single>
+      <single>
+        <search>
+          <query>index=chronos sourcetype=chronos:event honeypot=honeytoken | stats dc(src_ip) as "Honeytoken users"</query>
+          <earliest>-30d@d</earliest>
+          <latest>now</latest>
+        </search>
+        <option name="colorMode">block</option>
+        <option name="rangeColors">["0x53a051","0xdc4e41"]</option>
+        <option name="rangeValues">[0]</option>
+        <option name="useColors">1</option>
+      </single>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <title>SSH brute force (T1110.001)</title>
+      <table>
+        <search ref="Chronos - SSH brute force (T1110.001)"></search>
+        <option name="count">10</option>
+        <option name="drilldown">none</option>
+      </table>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <title>Successful login after brute force (T1078.001)</title>
+      <table>
+        <search ref="Chronos - Successful login after brute force (T1078.001)"></search>
+        <option name="count">10</option>
+        <option name="drilldown">none</option>
+      </table>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <title>Download then execute in one session (T1105 -&gt; T1222.002)</title>
+      <table>
+        <search ref="Chronos - Download then execute in one session (T1105 -> T1222.002)"></search>
+        <option name="count">10</option>
+        <option name="drilldown">none</option>
+      </table>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <title>SSH key persistence by campaign (T1098.004)</title>
+      <table>
+        <search ref="Chronos - SSH key persistence by campaign (T1098.004)"></search>
+        <option name="count">10</option>
+        <option name="drilldown">none</option>
+      </table>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <title>Honeytoken key used (T1078.004)</title>
+      <table>
+        <search ref="Chronos - Honeytoken key used (T1078.004)"></search>
+        <option name="count">10</option>
+        <option name="drilldown">none</option>
+      </table>
+    </panel>
+  </row>
+</dashboard>
