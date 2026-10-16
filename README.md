@@ -22,6 +22,7 @@ A lightweight, workplace-style SOC on two AWS EC2 instances: an internet-facing 
 │  chronos-soc-core  (m7i-flex.large)      │  zero inbound from the internet
 │  ├─ Vector core     normalize + classify │  catalog CSV + command rules → severity, MITRE
 │  ├─ OpenSearch 2.11 template, GeoIP, ISM │  chronos-logs-* (live) / chronos-replay-* (synthetic)
+│  ├─ Splunk Free (:8000)                  │  second SIEM over the live index via Vector HEC
 │  ├─ OpenSearch Dashboards (:5601)        │
 │  ├─ TheHive 5.2 (:9000)                  │  one alert per attacker session
 │  ├─ triage loop                          │  OpenSearch → TheHive, idempotent by session
@@ -29,7 +30,7 @@ A lightweight, workplace-style SOC on two AWS EC2 instances: an internet-facing 
 └──────────────────────────────────────────┘
                │ SSM port forwarding (outbound TLS only)
                ▼
-        Analyst Mac: localhost:9000 TheHive, localhost:5601 Dashboards
+        Analyst Mac: localhost:9000 TheHive, :5601 Dashboards, :8000 Splunk
 ```
 
 Design rules:
@@ -142,6 +143,36 @@ This writes `reports/findings-<date>.md` with these sections:
 - experiment: honeytoken bait and breadcrumbs (bait fetches, key recipients, `.git` dump depth per IP, Cowrie breadcrumb commands)
 
 The script exits non-zero if any non-experiment section has no data. Experiment sections show `_No data yet._` until the bait is live.
+
+---
+
+## Splunk (second SIEM)
+
+Splunk Free runs on the core as a second SIEM over the same live events, so detections can be written and
+compared in both OpenSearch query DSL and SPL. Vector's `splunk_hec_logs` sink mirrors the live index
+(`.ingest_stream == "logs"`, so synthetic replay never reaches it) into Splunk over HEC, with its own
+drop-when-full disk buffer so a Splunk outage never backs up the OpenSearch path. The app lives in
+`config/splunk/chronos/`; `scripts/deploy.sh core` packages it as a tgz and Splunk installs it with
+`SPLUNK_APPS_URL` (a bind mount into `/opt/splunk` breaks Splunk's startup).
+
+Enabled by the `splunk` compose profile, which `deploy.sh core` turns on while generating `SPLUNK_PASSWORD`
+and `SPLUNK_HEC_TOKEN` in the core `.env`. The UI is on `127.0.0.1:8000` (SSM tunnel only; `./start_chronos.sh`
+opens it). Splunk Free has no login roles and no scheduled alerting, so the five detections are saved reports,
+run from the Chronos app, the `Chronos - Detections` dashboard, or the CLI; alerting stays in TheHive.
+
+Detections (each mirrors a `config/vector/vector-core.yaml` rule, so the two engines can be compared):
+
+| Detection | Technique | Logic |
+| :--- | :--- | :--- |
+| SSH brute force | T1110.001 | >= 10 failed Cowrie logins per source IP per 10-minute window |
+| Successful login after brute force | T1078.001 | a login success from an IP with >= 5 prior failures |
+| Download then execute in one session | T1105 -> T1222.002 | a session that both stages a tool and `chmod`s it |
+| SSH key persistence by campaign | T1098.004 | `authorized_keys` writes grouped by key comment (campaign marker) |
+| Honeytoken key used | T1078.004 | honeytoken AWS key use; flags any success other than `GetCallerIdentity` |
+
+Vector only mirrors new events, so `scripts/splunk-backfill.py` loads history once (OpenSearch `chronos-logs-*`
+-> HEC, oldest first, with a daily size guard well under Free's 500 MB/day). Pass `--until <earliest Splunk time>`
+so it never overlaps the live stream.
 
 ---
 

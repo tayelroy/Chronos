@@ -47,6 +47,8 @@ The `chronos` function (already in ~/.zshrc on this Mac; adjust the path on anot
     http://localhost:5601   OpenSearch Dashboards  ->  Dashboards > "Chronos - Honeypot overview"
     http://localhost:9000   TheHive                ->  analyst@chronos.local (password below)
     http://localhost:9200   OpenSearch API
+    http://localhost:8000   Splunk            ->  admin / `sudo grep ^SPLUNK_PASSWORD= .env` on the core;
+                                                  app "Chronos" > dashboard "Chronos - Detections"
 
 Single tunnel, if you only need one:
 
@@ -95,6 +97,17 @@ Then `scripts/deploy.sh core` and `scripts/deploy.sh sensor` copy what each side
     curl -s 'localhost:9200/_cat/indices/chronos-*?v&s=index'
     curl -s 'localhost:9200/chronos-logs-*/_count'
     curl -s 'localhost:9200/chronos-logs-*/_search?size=5&sort=timestamp:desc&q=eventid:cowrie.command.input' | jq '.hits.hits[]._source | {timestamp,src_ip,input}'
+
+## Splunk [core]
+
+    PW=$(sudo grep ^SPLUNK_PASSWORD= /home/ssm-user/Chronos/.env | cut -d= -f2-)
+    S="docker exec -u splunk chronos-splunk /opt/splunk/bin/splunk"
+    $S search 'index=chronos | stats count by sourcetype host' -auth admin:$PW        # live HEC flow
+    $S search '| savedsearch "Chronos - Honeytoken key used (T1078.004)"' -auth admin:$PW
+    # One-time history load (Vector only mirrors new events). --until = earliest time already in Splunk:
+    TOKEN=$(grep ^SPLUNK_HEC_TOKEN= .env | cut -d= -f2-)
+    OPENSEARCH_HOST=http://localhost:9200 SPLUNK_HEC=http://localhost:8088 SPLUNK_HEC_TOKEN=$TOKEN \
+      python3 scripts/splunk-backfill.py --dry-run          # count + MB; drop --dry-run to send
 
 ## Verification [core]
 
