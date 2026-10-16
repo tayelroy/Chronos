@@ -66,6 +66,9 @@ docker compose -f docker-compose.core.yml up -d --build opensearch opensearch-da
 python3 scripts/core-bootstrap.py
 docker compose -f docker-compose.core.yml up -d --build --remove-orphans
 docker compose -f docker-compose.core.yml restart vector-core  # reload pipeline/catalog changes
+# Splunk installs the app tgz only at container start, so reinstall config/splunk/chronos changes.
+docker compose -f docker-compose.core.yml ps --services --filter status=running | grep -qx splunk \
+  && docker compose -f docker-compose.core.yml restart splunk || true
 docker compose -f docker-compose.core.yml ps --format 'table {{.Name}}\t{{.Status}}'"
     ;;
   sensor)
