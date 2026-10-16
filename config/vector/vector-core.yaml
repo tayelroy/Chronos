@@ -169,5 +169,5 @@ sinks:
       enabled: false
     buffer:
       type: disk
-      max_size: 268435456
+      max_size: 536870912  # 512 MiB; Vector's disk buffer minimum is 256 MiB
       when_full: drop_newest
