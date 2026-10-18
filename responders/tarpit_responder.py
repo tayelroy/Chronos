@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""Planned tarpit responder — not yet implemented.
+
+Print-only stub: queries OpenSearch and prints matching events. It does not
+hold, slow, or otherwise answer attacker connections.
+"""
 import requests
 import json
 import time
