@@ -124,11 +124,16 @@ export AWS_PROFILE=chronos        # least-privilege IAM user chronos-operator (c
 
 ---
 
+## Responders
+
+`responders/tarpit_responder.py` is a planned tarpit responder and is not yet implemented. It only queries OpenSearch and prints matching events.
+
+---
+
 ## Documentation
+
+Design documents (scope, architecture, and the implementation plan) are kept private and are not published in this repository.
 
 | Document | Description |
 | :--- | :--- |
-| [`docs/scope.md`](docs/scope.md) | Capabilities, constraints, in/out-of-scope boundaries |
-| [`docs/architecture.md`](docs/architecture.md) | Component specs, data flow diagrams, and threat model |
-| [`docs/plan.md`](docs/plan.md) | Phased implementation plan and verification gates |
 | [`aws/instance.md`](aws/instance.md) | AWS instance IDs and SSM access commands |
