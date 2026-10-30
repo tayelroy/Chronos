@@ -121,10 +121,14 @@ From the Mac:
     nc -zv -G 5 34.235.107.113 22; nc -zv -G 5 34.235.107.113 23; nc -zv -G 5 34.235.107.113 80   # open
     nc -zv -G 5 98.95.227.115 9002                                                                    # must fail
 
-## Findings report (on the Mac, while ./start_chronos.sh is running: it tunnels 9200)
+## Findings report and charts (on the Mac, while ./start_chronos.sh is running: it tunnels 9200)
 
-    python3 scripts/findings-report.py --exclude-ip "$(curl -s https://checkip.amazonaws.com)"
+    # also exclude the IP honeytokens-provision.sh checked the keys from, if it has changed since
+    python3 scripts/findings-report.py --exclude-ip "$(curl -s https://checkip.amazonaws.com)" --exclude-ip <older-ip>
     # writes reports/findings-<date>.md in this repo; exits 2 if any section has no data yet
+    uv run scripts/findings-charts.py --exclude-ip "$(curl -s https://checkip.amazonaws.com)" --exclude-ip <older-ip> \
+      --honeytoken-visible-until 2026-10-20T15:58:14          # honeytoken account suspended after this
+    # writes reports/charts/*.png
 
 ## DFIR [sensor]
 

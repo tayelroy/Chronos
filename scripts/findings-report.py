@@ -629,7 +629,7 @@ def main():
         "",
         f"Generated {now:%Y-%m-%d %H:%M} UTC from `{args.index}`"
         + (" (live sensor events only)" if live else " (synthetic replay data)")
-        + (f"; excluded analyst IPs: {', '.join(args.exclude_ip)}" if args.exclude_ip else "") + ".",
+        + (f"; {len(args.exclude_ip)} analyst IP(s) excluded" if args.exclude_ip else "") + ".",
         "",
         "Sensor `chronos-sensor` (AWS us-east-1, t4g.micro) exposes Cowrie SSH :22 / Telnet :23 and an HTTP canary :80. "
         "Every connection is unsolicited: nothing legitimate is hosted there.",
