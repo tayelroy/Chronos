@@ -6,10 +6,12 @@ Reads live sensor data (chronos-logs-*, events carrying sensor_id) and writes
 reports/findings-<UTC date>.md with:
   collection window and totals, top source countries and ASNs, attacks by MITRE
   technique, top credentials, top commands, bot families (sessions grouped by
-  normalized command sequence) with enumeration patterns, HTTP canary paths/UAs.
+  normalized command sequence) with enumeration patterns, HTTP canary paths/UAs,
+  plus the experiment sections: HTTP server personas, honeytoken bait and Cowrie breadcrumbs.
 
 Exits non-zero if any required section has no data rows (use --allow-empty to
-override), so "exit 0" means every section was filled from real data.
+override), so "exit 0" means every section was filled from real data. Experiment
+sections are reported but never fail the run (they stay empty until the bait is live).
 Stdlib only; run on the core or through an SSM tunnel to :9200.
 """
 import argparse
@@ -36,6 +38,7 @@ TECHNIQUE_NAMES = {
     "T1222.002": "Linux File Permissions Modification", "T1082": "System Information Discovery",
     "T1033": "System Owner/User Discovery", "T1057": "Process Discovery",
     "T1016": "System Network Configuration Discovery", "T1083": "File and Directory Discovery",
+    "T1552.001": "Credentials In Files", "T1552.003": "Bash History", "T1021.004": "Remote Services: SSH",
 }
 REQUIRED_SECTIONS = [
     "Collection window and totals",
@@ -46,6 +49,18 @@ REQUIRED_SECTIONS = [
     "Bot families and enumeration patterns",
     "HTTP canary paths and user agents",
 ]
+
+# Product-specific path families. Personas are assigned per source IP by hash, so without adaptation every
+# family draws the same share of each persona's IPs; a persona pulling ahead on its own family means scanners
+# read the fingerprint (Server header, default page) and picked follow-up requests from it.
+PERSONA_PATH_FAMILIES = [
+    ("Boa router /boaform", "*boaform*"),
+    ("OpenWrt LuCI", "*luci*"),
+    ("PHPUnit eval-stdin", "*eval-stdin*"),
+    ("WordPress wp-*", "*wp-*"),
+    ("ASP.NET .asp(x)", "*.asp*"),
+]
+BREADCRUMB_TECHNIQUES = ["T1552.001", "T1552.003", "T1021.004"]
 
 # Command normalization: strip per-victim / per-campaign noise so the same bot groups together.
 KEEP_TOKENS = {"base64", "sha256sum", "sha1sum", "md5sum", "aarch64", "armv7l", "x86_64", "i686", "ipv4", "ipv6"}
@@ -433,6 +448,149 @@ def section_canary(os_):
     ]
 
 
+def section_personas(os_):
+    card = {"cardinality": {"field": "src_ip"}}
+    total, a = os_.aggs({"personas": terms("persona", 10, aggs={
+        "ips": card,
+        "paths": {"cardinality": {"field": "path"}},
+        "exploit": {"filter": {"term": {"detection_key": "canary.exploit"}}},
+        "families": {"filters": {"filters": {label: {"wildcard": {"path": {"value": pattern}}}
+                                             for label, pattern in PERSONA_PATH_FAMILIES}},
+                     "aggs": {"ips": card}},
+        "top": terms("path", 8, aggs={"ips": card}),
+    })}, {"term": {"honeypot": "canary"}}, {"exists": {"field": "persona"}})
+    personas = a.get("personas", {}).get("buckets", [])
+    if not total or not personas:
+        return []
+    families = [label for label, _ in PERSONA_PATH_FAMILIES]
+
+    def share(b, label):
+        hit, ips = b["families"]["buckets"][label]["ips"]["value"], b["ips"]["value"]
+        return f"{hit:,} ({100 * hit / ips:.1f}%)" if ips else "0"
+
+    lines = [
+        f"{total:,} canary requests carry a persona. Each source IP is pinned to one persona (sha256 of the IP), "
+        "so the groups are comparable random samples of the same scanner population.",
+        "",
+        table(["Persona", "Unique IPs", "Requests", "Distinct paths", "Exploit attempts"],
+              [(b["key"], f"{b['ips']['value']:,}", f"{b['doc_count']:,}", f"{b['paths']['value']:,}",
+                f"{b['exploit']['doc_count']:,}") for b in personas]),
+        "",
+        "**Product path families: unique IPs per persona (share of that persona's IPs)**",
+        "",
+        table(["Persona"] + families, [[b["key"]] + [share(b, f) for f in families] for b in personas]),
+    ]
+    for b in personas:
+        lines += ["", f"**Top paths for `{b['key']}`**", "",
+                  table(["Path", "Requests", "Unique IPs"],
+                        [(md(p["key"], 90), f"{p['doc_count']:,}", f"{p['ips']['value']:,}")
+                         for p in b["top"]["buckets"]])]
+    return lines
+
+
+def parse_time(value):
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def span(seconds):
+    if seconds < 0:
+        return "-" + span(-seconds)
+    minutes = int(seconds // 60)
+    return f"{minutes // 1440}d {minutes // 60 % 24}h" if minutes >= 1440 else f"{minutes // 60}h {minutes % 60}m"
+
+
+def section_honeytokens(os_):
+    lines = []
+    recipients = {}  # (bait, ip) -> first handout + context
+    _, a = os_.aggs({"baits": terms("bait", 5, aggs={
+        "ips": {"cardinality": {"field": "src_ip"}},
+        "served": {"filter": {"term": {"honeytoken_served": True}},
+                   "aggs": {"ips": {"cardinality": {"field": "src_ip"}}}},
+        "first": {"min": {"field": "timestamp"}},
+    })}, {"term": {"honeypot": "canary"}}, {"exists": {"field": "bait"}})
+    baits = a.get("baits", {}).get("buckets", [])
+    if baits:
+        lines += [
+            "**Canary bait fetches**",
+            "",
+            table(["Bait", "Requests", "Unique IPs", "Responses with the key", "IPs that got the key", "First fetch"],
+                  [(b["key"], f"{b['doc_count']:,}", f"{b['ips']['value']:,}", f"{b['served']['doc_count']:,}",
+                    f"{b['served']['ips']['value']:,}", b["first"].get("value_as_string", "")[:16])
+                   for b in baits]),
+        ]
+        for d in os_.scan(["timestamp", "src_ip", "bait", "user_agent", "geo.country_iso_code",
+                           "as.organization_name"], {"term": {"honeypot": "canary"}}, {"term": {"honeytoken_served": True}}):
+            row = recipients.setdefault((d.get("bait"), d.get("src_ip")), {"first": d.get("timestamp"), "n": 0, **d})
+            row["n"] += 1
+        rows = sorted(recipients.values(), key=lambda r: r["first"] or "")[:60]
+        lines += [
+            "", f"**Key recipients** ({len(recipients):,} bait/IP pairs; earliest 60)", "",
+            table(["First fetch (UTC)", "Bait", "Source IP", "Country", "ASN", "Fetches", "User agent"],
+                  [(str(r["first"])[:19], r["bait"], r["src_ip"], (r.get("geo") or {}).get("country_iso_code", "?"),
+                    md((r.get("as") or {}).get("organization_name", "?"), 40), r["n"], md(r.get("user_agent", ""), 60))
+                   for r in rows]),
+        ]
+        _, g = os_.aggs({"ips": terms("src_ip", 25, aggs={
+            "files": {"cardinality": {"field": "path"}},
+            "got_key": {"filter": {"term": {"honeytoken_served": True}}},
+        })}, {"term": {"honeypot": "canary"}}, {"term": {"bait": "git"}})
+        if g["ips"]["buckets"]:
+            lines += [
+                "", "**Exposed .git: how far each IP dumped** (the key is only in the .env.production blob)", "",
+                table(["Source IP", ".git files fetched", "Fetched the key blob"],
+                      [(b["key"], f"{b['files']['value']:,}", "yes" if b["got_key"]["doc_count"] else "no")
+                       for b in g["ips"]["buckets"]]),
+            ]
+
+    crumbs = list(os_.scan(["timestamp", "src_ip", "session", "input", "command_techniques"],
+                           {"term": {"eventid": "cowrie.command.input"}},
+                           {"terms": {"command_techniques": BREADCRUMB_TECHNIQUES}}))
+    for d in crumbs:
+        if "T1552.001" in d.get("command_techniques", []):  # touched /root/.aws: counts as receiving the cowrie key
+            recipients.setdefault(("cowrie", d.get("src_ip")), {"first": d.get("timestamp")})
+    if crumbs:
+        sessions = {d.get("session") for d in crumbs}
+        lines += ([""] if lines else []) + [
+            f"**Cowrie breadcrumbs touched** ({len(crumbs):,} commands in {len(sessions):,} sessions; latest 40)",
+            "",
+            table(["Time (UTC)", "Source IP", "Techniques", "Command"],
+                  [(str(d.get("timestamp"))[:19], d.get("src_ip"),
+                    ", ".join(t for t in d.get("command_techniques", []) if t in BREADCRUMB_TECHNIQUES),
+                    md(d.get("input", ""), 100)) for d in crumbs[-40:]]),
+        ]
+
+    uses = list(os_.scan(["timestamp", "bait", "src_ip", "source_address", "aws_event_source", "aws_event_name",
+                          "aws_region", "aws_error_code", "user_agent", "geo.country_iso_code", "as.organization_name"],
+                         {"term": {"honeypot": "honeytoken"}}))
+    if uses:
+        first_handout = {}
+        for (bait, _), r in recipients.items():
+            if r["first"] and (bait not in first_handout or r["first"] < first_handout[bait]):
+                first_handout[bait] = r["first"]
+        same_ip = sum(1 for u in uses if (u.get("bait"), u.get("src_ip")) in recipients)
+        rows = []
+        for u in uses[:80]:
+            got = recipients.get((u.get("bait"), u.get("src_ip")))
+            handout = first_handout.get(u.get("bait"))
+            rows.append((
+                str(u.get("timestamp"))[:19], u.get("bait"), u.get("src_ip") or md(u.get("source_address", "?"), 30),
+                (u.get("geo") or {}).get("country_iso_code", "?"), md((u.get("as") or {}).get("organization_name", "?"), 30),
+                md(f"{(u.get('aws_event_source') or '').split('.')[0]}:{u.get('aws_event_name')} {u.get('aws_region')}", 50),
+                u.get("aws_error_code") or "ok",
+                f"yes ({str(got['first'])[:16]})" if got else "no",
+                span((parse_time(u["timestamp"]) - parse_time(handout)).total_seconds()) if handout else "?",
+                md(u.get("user_agent", ""), 50),
+            ))
+        lines += ([""] if lines else []) + [
+            f"**Key use seen in CloudTrail** ({len(uses):,} API calls; {same_ip:,} from an IP that fetched that bait; "
+            "earliest 80)",
+            "",
+            table(["Time (UTC)", "Bait", "Source", "Country", "ASN", "AWS call", "Result", "Same IP got the key",
+                   "Since first handout", "User agent"], rows),
+        ]
+    return lines
+
+
 def main():
     parser = argparse.ArgumentParser(description="Chronos findings report (OpenSearch -> Markdown)")
     parser.add_argument("--opensearch", default=os.getenv("OPENSEARCH_HOST", "http://localhost:9200"))
@@ -458,6 +616,10 @@ def main():
         "Bot families and enumeration patterns": section_families(os_, args.families),
         "HTTP canary paths and user agents": section_canary(os_),
     }
+    experiments = {
+        "Experiment: HTTP server personas": section_personas(os_),
+        "Experiment: honeytoken bait and breadcrumbs": section_honeytokens(os_),
+    }
 
     now = datetime.now(timezone.utc)
     out = Path(args.output) if args.output else REPO / "reports" / f"findings-{now:%Y-%m-%d}.md"
@@ -467,7 +629,7 @@ def main():
         "",
         f"Generated {now:%Y-%m-%d %H:%M} UTC from `{args.index}`"
         + (" (live sensor events only)" if live else " (synthetic replay data)")
-        + (f"; excluded analyst IPs: {', '.join(args.exclude_ip)}" if args.exclude_ip else "") + ".",
+        + (f"; {len(args.exclude_ip)} analyst IP(s) excluded" if args.exclude_ip else "") + ".",
         "",
         "Sensor `chronos-sensor` (AWS us-east-1, t4g.micro) exposes Cowrie SSH :22 / Telnet :23 and an HTTP canary :80. "
         "Every connection is unsolicited: nothing legitimate is hosted there.",
@@ -479,6 +641,8 @@ def main():
         doc += [f"## {title}", ""] + (body if body else ["_No data._"]) + [""]
         if not body:
             empty.append(title)
+    for title, body in experiments.items():
+        doc += [f"## {title}", ""] + (body if body else ["_No data yet._"]) + [""]
     out.write_text("\n".join(doc))
     print(f"[+] Wrote {out}")
     if meta:

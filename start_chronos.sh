@@ -13,9 +13,19 @@ source scripts/lib/ssm.sh
 TUNNELS=1
 [[ "${1:-}" == "--no-tunnels" ]] && TUNNELS=0
 
-echo "=================================================="
-echo "Chronos: sensor $CHRONOS_SENSOR_ID · core $CHRONOS_SOC_ID"
-echo "=================================================="
+cat <<'BANNER'
+
+   ██████╗██╗  ██╗██████╗  ██████╗ ███╗   ██╗ ██████╗ ███████╗
+  ██╔════╝██║  ██║██╔══██╗██╔═══██╗████╗  ██║██╔═══██╗██╔════╝
+  ██║     ███████║██████╔╝██║   ██║██╔██╗ ██║██║   ██║███████╗
+  ██║     ██╔══██║██╔══██╗██║   ██║██║╚██╗██║██║   ██║╚════██║
+  ╚██████╗██║  ██║██║  ██║╚██████╔╝██║ ╚████║╚██████╔╝███████║
+   ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝ ╚═════╝ ╚══════╝
+        honeypot sensor  ──▶  SIEM  ──▶  case management
+
+BANNER
+echo "  sensor $CHRONOS_SENSOR_ID · core $CHRONOS_SOC_ID"
+echo
 
 ensure_running "$CHRONOS_SENSOR_ID" "$CHRONOS_SOC_ID"
 
@@ -27,7 +37,7 @@ ssm_run "$CHRONOS_SOC_ID" "cd $CHRONOS_REMOTE_DIR && docker compose -f docker-co
 (( TUNNELS )) || exit 0
 
 # Replace any stale tunnels from a previous run.
-pkill -f "AWS-StartPortForwardingSession.*(9000|5601|9200)" 2>/dev/null || true
+pkill -f "AWS-StartPortForwardingSession.*(9000|5601|9200|8000)" 2>/dev/null || true
 sleep 1
 tunnel() {  # tunnel <remote-and-local-port>; runs in this shell so $! is a child we can wait on
   aws ssm start-session --target "$CHRONOS_SOC_ID" --document-name AWS-StartPortForwardingSession \
@@ -38,10 +48,11 @@ echo "[*] Opening SSM tunnels"
 tunnel 9000; PID_THEHIVE=$!
 tunnel 5601; PID_DASHBOARDS=$!
 tunnel 9200; PID_OPENSEARCH=$!
+tunnel 8000; PID_SPLUNK=$!
 
 cleanup() {
   echo -e "\n[*] Closing SSM tunnels"
-  kill "$PID_THEHIVE" "$PID_DASHBOARDS" "$PID_OPENSEARCH" 2>/dev/null || true
+  kill "$PID_THEHIVE" "$PID_DASHBOARDS" "$PID_OPENSEARCH" "$PID_SPLUNK" 2>/dev/null || true
   exit 0
 }
 trap cleanup SIGINT SIGTERM
@@ -73,10 +84,19 @@ DASHBOARDS_READY=0
 check_service "TheHive" "http://localhost:9000" "$PID_THEHIVE" 180 && THEHIVE_READY=1
 check_service "OpenSearch Dashboards" "http://localhost:5601" "$PID_DASHBOARDS" 180 && DASHBOARDS_READY=1
 check_service "OpenSearch API" "http://localhost:9200/_cluster/health" "$PID_OPENSEARCH" 60 || true
+check_service "Splunk" "http://localhost:8000/en-US/account/login" "$PID_SPLUNK" 180 || true
 
 (( THEHIVE_READY )) && open "http://localhost:9000"
 (( DASHBOARDS_READY )) && open "http://localhost:5601/app/dashboards#/view/chronos-overview"
 
-echo -e "\n[Tunnels active on 9000, 5601, 9200. Keep this terminal open; Ctrl+C closes them.]"
+echo -e "\n[Tunnels active on 9000, 5601, 9200, 8000. Keep this terminal open; Ctrl+C closes them.]"
 echo "[Cost: the core is ~\$0.10/h while running. ./stop_chronos.sh stops it; the sensor keeps collecting.]"
-wait "$PID_THEHIVE" "$PID_DASHBOARDS" "$PID_OPENSEARCH"
+
+# SSM closes idle sessions (20 min by default); reopen any tunnel that drops until Ctrl+C.
+while :; do
+  sleep 10
+  kill -0 "$PID_THEHIVE" 2>/dev/null || { tunnel 9000; PID_THEHIVE=$!; echo "[*] $(date +%T) reopened tunnel 9000"; }
+  kill -0 "$PID_DASHBOARDS" 2>/dev/null || { tunnel 5601; PID_DASHBOARDS=$!; echo "[*] $(date +%T) reopened tunnel 5601"; }
+  kill -0 "$PID_OPENSEARCH" 2>/dev/null || { tunnel 9200; PID_OPENSEARCH=$!; echo "[*] $(date +%T) reopened tunnel 9200"; }
+  kill -0 "$PID_SPLUNK" 2>/dev/null || { tunnel 8000; PID_SPLUNK=$!; echo "[*] $(date +%T) reopened tunnel 8000"; }
+done

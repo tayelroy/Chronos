@@ -100,6 +100,101 @@ tests:
               assert_eq!(.detection_key, "canary.probe")
               assert_eq!(.severity, 2)
 
+  - name: canary response carrying a honeytoken is credential access
+    inputs:
+      - insert_at: normalize_events
+        type: log
+        log_fields:
+          sensor_id: aws-edge-t4g-01
+          message: '{"event_type":"canary_http_hit","src_ip":"203.0.113.7","method":"GET","path":"/.env","query":"","user_agent":"python-requests/2.31","persona":"nginx","bait":"dotenv","honeytoken_served":true,"status":200,"timestamp":"2026-10-15T09:00:00Z"}'
+    outputs:
+      - extract_from: normalize_events
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.detection_key, "canary.honeytoken")
+              assert_eq!(.mitre_technique, "T1552.001")
+              assert_eq!(.severity, 4)
+              assert_eq!(.persona, "nginx")
+
+  - name: git bait without the key (repo metadata) stays enumeration
+    inputs:
+      - insert_at: normalize_events
+        type: log
+        log_fields:
+          sensor_id: aws-edge-t4g-01
+          message: '{"event_type":"canary_http_hit","src_ip":"203.0.113.7","method":"GET","path":"/.git/HEAD","query":"","user_agent":"python-requests/2.31","persona":"iis","bait":"git","honeytoken_served":false,"status":200,"timestamp":"2026-10-15T09:00:01Z"}'
+    outputs:
+      - extract_from: normalize_events
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.detection_key, "canary.enumeration")
+              assert_eq!(.severity, 3)
+
+  - name: reading the AWS and history breadcrumbs is credential access
+    inputs:
+      - insert_at: normalize_events
+        type: log
+        log_fields:
+          sensor_id: aws-edge-t4g-01
+          message: '{"eventid":"cowrie.command.input","session":"bc1","src_ip":"203.0.113.9","input":"cat /root/.aws/credentials; cat ~/.bash_history","timestamp":"2026-10-15T09:01:00Z"}'
+    outputs:
+      - extract_from: normalize_events
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.command_techniques, ["T1552.001", "T1552.003"])
+              assert_eq!(.mitre_technique, "T1552.001")
+              assert_eq!(.severity, 4)
+
+  - name: ssh to a user@host from the breadcrumbs is lateral movement
+    inputs:
+      - insert_at: normalize_events
+        type: log
+        log_fields:
+          sensor_id: aws-edge-t4g-01
+          message: '{"eventid":"cowrie.command.input","session":"bc2","src_ip":"203.0.113.9","input":"cd /tmp && ssh deploy@192.168.50.12","timestamp":"2026-10-15T09:01:01Z"}'
+    outputs:
+      - extract_from: normalize_events
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.command_techniques, ["T1021.004"])
+
+  - name: planting an ssh key or truncating history is not lateral movement or credential access
+    inputs:
+      - insert_at: normalize_events
+        type: log
+        log_fields:
+          sensor_id: aws-edge-t4g-01
+          message: '{"eventid":"cowrie.command.input","session":"bc3","src_ip":"203.0.113.9","input":"echo \"ssh-rsa AAAAB3NzaC1yc2E root@vps\" >> ~/.ssh/authorized_keys; cat /dev/null > ~/.bash_history","timestamp":"2026-10-15T09:01:02Z"}'
+    outputs:
+      - extract_from: normalize_events
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.command_techniques, ["T1098.004"])
+              assert_eq!(.severity, 5)
+
+  - name: honeytoken key use from CloudTrail is live, severity 5 cloud-account access
+    inputs:
+      - insert_at: normalize_events
+        type: log
+        log_fields:
+          message: '{"event_type":"honeytoken_key_used","sensor_id":"honeytoken-cloudtrail","timestamp":"2026-10-15T10:00:00Z","bait":"dotenv","src_ip":"203.0.113.77","aws_event_source":"sts.amazonaws.com","aws_event_name":"GetCallerIdentity","aws_region":"us-east-1","user_agent":"aws-cli/2.15.0"}'
+    outputs:
+      - extract_from: normalize_events
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.ingest_stream, "logs")
+              assert_eq!(.honeypot, "honeytoken")
+              assert_eq!(.detection_key, "honeytoken.key_used")
+              assert_eq!(.mitre_technique, "T1078.004")
+              assert_eq!(.severity, 5)
+              assert_eq!(format_timestamp!(.timestamp, "%Y-%m-%dT%H:%M"), "2026-10-15T10:00")
+
   - name: unknown cowrie event falls back to severity 1
     inputs:
       - insert_at: normalize_events

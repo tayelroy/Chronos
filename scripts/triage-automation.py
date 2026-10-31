@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-triage-automation.py - Chronos session-level triage: OpenSearch -> TheHive alerts.
+triage-automation.py - Chronos triage: OpenSearch -> TheHive alerts.
 
 One TheHive alert per Cowrie session that reached severity >= --min-severity
 (login success and beyond). Alerts are keyed by `sourceRef = <cowrie session id>`,
@@ -10,8 +10,13 @@ and TheHive itself rejects a second alert with the same (type, source, sourceRef
 A session is only alerted once it is complete (cowrie.session.closed seen, or no
 events for --settle seconds) so the alert carries the whole command chain.
 
-Latency reported per alert = alert creation time - timestamp of the session's first
-severity >= threshold event (event-to-alert, includes the settle window by design).
+Honeytoken key use (honeypot "honeytoken", from scripts/honeytoken-poller.py) gets one
+alert per bait, source address and UTC day (`sourceRef = honeytoken:<bait>:<source>:<day>`),
+raised once that group has been quiet for --settle seconds. Calls made after the alert
+stay in OpenSearch but are not appended to it.
+
+Latency reported per alert = alert creation time - timestamp of the first event at or
+above the threshold (event-to-alert, includes the settle window by design).
 """
 import argparse
 import os
@@ -30,6 +35,16 @@ THEHIVE_API_KEY = os.getenv("THEHIVE_API_KEY", "")
 ALERT_TYPE = "honeypot-session"
 LIVE_SOURCE = "chronos-cowrie"
 REPLAY_SOURCE = "chronos-replay"  # synthetic sessions from chronos-replay-*; kept apart from live alerts
+HONEYTOKEN_TYPE = "honeytoken-key-use"
+HONEYTOKEN_SOURCE = "chronos-honeytoken"
+BAIT_LOCATIONS = {
+    "dotenv": "canary GET /.env",
+    "wp-config": "canary GET /wp-config.php.bak",
+    "git": "canary /.git/ repository (.env.production blob)",
+    "cowrie": "Cowrie /root/.aws/credentials",
+}
+# The only call a deny-all IAM user can make successfully. Anything else succeeding means the deny is broken.
+EXPECTED_SUCCESS = {"GetCallerIdentity"}
 # Chronos severity (1-5) -> TheHive severity (1 low .. 4 critical)
 THEHIVE_SEVERITY = {1: 1, 2: 1, 3: 2, 4: 3, 5: 4}
 MAX_SESSIONS_PER_RUN = 500
@@ -199,20 +214,34 @@ def code_block_inline(text: str) -> str:
     return f"{fence} {text} {fence}"
 
 
-def run_once(args) -> int:
+def post_alert(alert: Dict[str, Any], ref: str, dry_run: bool) -> Any:
+    """Create the alert; return event-to-alert latency in seconds, 0.0 for a dry run, None if not created."""
+    trigger_ts = alert.pop("_trigger_ts")
+    if dry_run:
+        print(f"[DRY-RUN] {alert['title']} (sourceRef={ref}, severity={alert['severity']})")
+        return 0.0
+    res = thehive("POST", "/api/v1/alert", json=alert)
+    if res.status_code in (200, 201):
+        latency = time.time() - parse_ts(trigger_ts).timestamp()
+        print(f"[+] Alert {res.json().get('_id')} for {ref} ({alert['title']}); event-to-alert {latency:.1f}s")
+        return latency
+    if res.status_code == 400 and "already exist" in res.text.lower():
+        print(f"[*] {ref} already alerted (TheHive rejected duplicate sourceRef)")
+    else:
+        print(f"[-] TheHive rejected alert for {ref}: HTTP {res.status_code} {res.text[:300]}")
+    return None
+
+
+def run_sessions(args) -> List[float]:
     sessions = candidate_sessions(args.index, args.min_severity, args.lookback)
     if not sessions:
         print("[*] No sessions at or above severity threshold.")
-        return 0
+        return []
     source = REPLAY_SOURCE if args.index.startswith("chronos-replay") else LIVE_SOURCE
     already = existing_source_refs(sessions, source) if not args.dry_run else set()
     pending = [s for s in sessions if s not in already][:MAX_SESSIONS_PER_RUN]
     print(f"[*] {len(sessions)} candidate sessions, {len(already)} already alerted, {len(pending)} to evaluate")
-    if not pending:
-        return 0
-
     now = time.time()
-    created = 0
     latencies = []
     events_by_session = {}
     for i in range(0, len(pending), 50):
@@ -225,30 +254,141 @@ def run_once(args) -> int:
         idle = now - parse_ts(events[-1]["timestamp"]).timestamp()
         if not closed and idle < args.settle:
             continue
-        alert = build_alert(session, events, args.min_severity, source)
-        trigger_ts = alert.pop("_trigger_ts")
-        if args.dry_run:
-            print(f"[DRY-RUN] {alert['title']} (sourceRef={session}, severity={alert['severity']})")
-            created += 1
-            continue
-        res = thehive("POST", "/api/v1/alert", json=alert)
-        if res.status_code in (200, 201):
-            latency = time.time() - parse_ts(trigger_ts).timestamp()
+        latency = post_alert(build_alert(session, events, args.min_severity, source), session, args.dry_run)
+        if latency is not None:
             latencies.append(latency)
-            created += 1
-            print(f"[+] Alert {res.json().get('_id')} for session {session} ({alert['title']}); "
-                  f"event-to-alert {latency:.1f}s")
-        elif res.status_code == 400 and "already exist" in res.text.lower():
-            print(f"[*] Session {session} already alerted (TheHive rejected duplicate sourceRef)")
-        else:
-            print(f"[-] TheHive rejected alert for session {session}: HTTP {res.status_code} {res.text[:300]}")
+    return latencies
+
+
+def honeytoken_groups(index: str, lookback: str) -> Dict[str, List[Dict[str, Any]]]:
+    body = {
+        "size": 10000,
+        "query": {"bool": {"filter": [
+            {"term": {"honeypot": "honeytoken"}},
+            {"range": {"timestamp": {"gte": f"now-{lookback}"}}},
+        ]}},
+        "sort": [{"timestamp": "asc"}],
+    }
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for hit in os_search(index, body)["hits"]["hits"]:
+        e = hit["_source"]
+        source_addr = e.get("src_ip") or e.get("source_address") or "unknown"
+        groups.setdefault(f"honeytoken:{e.get('bait')}:{source_addr}:{e['timestamp'][:10]}", []).append(e)
+    return groups
+
+
+def first_handout(index: str, bait: str, src_ip: Any) -> Dict[str, Any]:
+    """When the bait's key was first handed out to anyone, and to this source IP."""
+    if bait == "cowrie":  # reading /root/.aws in Cowrie is the handout
+        handout = [{"term": {"eventid": "cowrie.command.input"}}, {"term": {"command_techniques": "T1552.001"}}]
+    else:
+        handout = [{"term": {"honeypot": "canary"}}, {"term": {"bait": bait}}, {"term": {"honeytoken_served": True}}]
+    aggs = {"first": {"min": {"field": "timestamp"}}}
+    if src_ip:
+        aggs["this_ip"] = {"filter": {"term": {"src_ip": src_ip}}, "aggs": {"first": {"min": {"field": "timestamp"}}}}
+    a = os_search(index, {"size": 0, "query": {"bool": {"filter": handout}}, "aggs": aggs}).get("aggregations", {})
+    return {
+        "any": a.get("first", {}).get("value_as_string"),
+        "this_ip": a.get("this_ip", {}).get("first", {}).get("value_as_string"),
+    }
+
+
+def build_honeytoken_alert(ref: str, events: List[Dict[str, Any]], handout: Dict[str, Any]) -> Dict[str, Any]:
+    first, last = events[0], events[-1]
+    bait = first.get("bait", "unknown")
+    source_addr = first.get("src_ip") or first.get("source_address") or "unknown"
+    geo = first.get("geo", {}) or {}
+    asn = first.get("as", {}) or {}
+    unexpected = [e for e in events if not e.get("aws_error_code") and e.get("aws_event_name") not in EXPECTED_SUCCESS]
+    regions = sorted({e.get("aws_region", "?") for e in events})
+    user_agents = sorted({e.get("user_agent", "") for e in events if e.get("user_agent")})
+    calls = [f"{e['timestamp']}  {(e.get('aws_event_source') or '').split('.')[0]}:{e.get('aws_event_name')}  "
+             f"{e.get('aws_region')}  {e.get('aws_error_code') or 'OK'}" for e in events]
+    rows = [
+        ("Bait", bait),
+        ("Planted at", BAIT_LOCATIONS.get(bait, "unknown")),
+        ("Access key", first.get("access_key_id", "?")),
+        ("Source", source_addr),
+        ("Country", geo.get("country_name", "unknown")),
+        ("ASN", f"AS{asn.get('asn', '?')} {asn.get('organization_name', '')}".strip()),
+        ("First call", first.get("timestamp")),
+        ("Last call", last.get("timestamp")),
+        ("API calls", str(len(events))),
+        ("Regions", ", ".join(regions)),
+        ("Key first handed out (anyone)", handout.get("any") or "never seen"),
+        ("Key handed out to this IP", handout.get("this_ip") or "no: fetched elsewhere, or shared after the fetch"),
+    ]
+    table = "| Field | Value |\n|---|---|\n" + "\n".join(f"| {k} | {code_block_inline(str(v))} |" for k, v in rows)
+    desc = ["### Chronos honeytoken key used (NIST SP 800-61: Detection & Analysis)", table]
+    if unexpected:
+        desc += ["#### UNEXPECTED SUCCESS: the deny-all policy did not hold",
+                 code_block("\n".join(f"{e['timestamp']}  {e.get('aws_event_name')}  {e.get('aws_region')}"
+                                      for e in unexpected))]
+    desc += ["#### API calls (CloudTrail)", code_block("\n".join(calls)),
+             "#### User agents", code_block("\n".join(user_agents) or "(none)")]
+    actions = [
+        "No containment needed while every call except GetCallerIdentity is denied: the key belongs to a deny-all "
+        "IAM user in the isolated honeytoken account.",
+        "Compare the source with the bait's fetchers: `python3 scripts/findings-report.py` → "
+        "\"Key use seen in CloudTrail\".",
+        "Look for other activity from this IP and ASN in OpenSearch Dashboards (scans, Cowrie sessions).",
+    ]
+    if unexpected:
+        actions.insert(0, "Deactivate the key now (honeytoken account, IAM user) and re-run "
+                          "scripts/honeytokens-provision.sh; check the SCP is still attached.")
+    desc += ["#### Recommended actions", "\n".join(f"{i}. {a}" for i, a in enumerate(actions, 1))]
+
+    observables = [{"dataType": "user-agent", "data": ua, "tags": ["honeytoken"]} for ua in user_agents]
+    if first.get("src_ip"):
+        observables.insert(0, {"dataType": "ip", "data": first["src_ip"], "tags": ["attacker", "honeytoken-user"]})
+    tags = ["chronos", "honeytoken", f"bait:{bait}", "T1078.004", "chronos-severity:5"]
+    tags += sorted({f"aws:{e.get('aws_event_name')}" for e in events})
+    if geo.get("country_iso_code"):
+        tags.append(f"country:{geo['country_iso_code']}")
+    return {
+        "type": HONEYTOKEN_TYPE,
+        "source": HONEYTOKEN_SOURCE,
+        "sourceRef": ref,
+        "title": f"[Chronos] Honeytoken key used: {bait} bait from {source_addr}"
+                 + (" (UNEXPECTED SUCCESS)" if unexpected else ""),
+        "description": "\n\n".join(desc),
+        "severity": 4,
+        "date": int(parse_ts(first["timestamp"]).timestamp() * 1000),
+        "tags": tags,
+        "tlp": 2,
+        "pap": 2,
+        "observables": observables,
+        "_trigger_ts": first["timestamp"],
+    }
+
+
+def run_honeytokens(args) -> List[float]:
+    if args.index.startswith("chronos-replay"):
+        return []  # honeytoken events only exist in the live index
+    groups = honeytoken_groups(args.index, args.lookback)
+    if not groups:
+        return []
+    already = existing_source_refs(list(groups), HONEYTOKEN_SOURCE) if not args.dry_run else set()
+    now = time.time()
+    latencies = []
+    for ref, events in groups.items():
+        if ref in already or now - parse_ts(events[-1]["timestamp"]).timestamp() < args.settle:
+            continue
+        handout = first_handout(args.index, events[0].get("bait", ""), events[0].get("src_ip"))
+        latency = post_alert(build_honeytoken_alert(ref, events, handout), ref, args.dry_run)
+        if latency is not None:
+            latencies.append(latency)
+    print(f"[*] {len(groups)} honeytoken key-use groups, {len(already)} already alerted")
+    return latencies
+
+
+def run_once(args) -> int:
+    latencies = run_sessions(args) + run_honeytokens(args)
     if latencies:
         latencies.sort()
-        print(f"[*] Created {created} alerts; event-to-alert latency median {latencies[len(latencies) // 2]:.1f}s, "
-              f"max {latencies[-1]:.1f}s")
-    else:
-        print(f"[*] Created {created} alerts")
-    return created
+        print(f"[*] Created {len(latencies)} alerts; event-to-alert latency median "
+              f"{latencies[len(latencies) // 2]:.1f}s, max {latencies[-1]:.1f}s")
+    return len(latencies)
 
 
 def main():

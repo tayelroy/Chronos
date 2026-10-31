@@ -15,7 +15,9 @@ x-hardened: &hardened
 services:
   cowrie:
     <<: *hardened
-    image: cowrie/cowrie:latest
+    # Pinned: start-cowrie.py depends on this image's fs.pickle layout and twistd path.
+    # Cowrie 3.0.15 (cowrie/cowrie:latest as of 2026-09-19); bump deliberately and re-test the breadcrumbs.
+    image: cowrie/cowrie@sha256:fc57120d88c2bfb5817f63f6c132ce5c2969b641c2f1ac67887652b6f294148d
     container_name: chronos-edge-cowrie
     mem_limit: 300m
     environment:
@@ -24,6 +26,13 @@ services:
       # wget/curl/ftpget/tftp/nc really fetch so payloads can be captured; cap each transfer at 10 MB
       # so a bot cannot fill the sensor disk.
       - COWRIE_HONEYPOT_DOWNLOAD_LIMIT_SIZE=10485760
+      # honeypots/cowrie/start-cowrie.py writes the breadcrumbed fake filesystem here, then execs twistd.
+      - COWRIE_SHELL_FILESYSTEM=/tmp/fs.pickle
+      - HONEYTOKEN_COWRIE_AWS_KEY_ID=${HONEYTOKEN_COWRIE_AWS_KEY_ID:-}
+      - HONEYTOKEN_COWRIE_AWS_SECRET=${HONEYTOKEN_COWRIE_AWS_SECRET:-}
+    # The image's entrypoint is python3; this is the image's own CMD behind the breadcrumb wrapper.
+    command: ["/chronos/start-cowrie.py", "/cowrie/cowrie-env/bin/twistd", "-n", "--umask=0022", "--pidfile=",
+              "--logger", "cowrie.python.logfile.stdoutLogger", "cowrie"]
     ports:
       - "22:2222"
       - "23:2223"
@@ -31,6 +40,7 @@ services:
       - /tmp
       - /cowrie/cowrie-git/var/run
     volumes:
+      - ./honeypots/cowrie:/chronos:ro
       # Host dirs must be owned by the cowrie uid (999); scripts/deploy.sh sets this.
       - ./logs/cowrie:/cowrie/cowrie-git/var/log/cowrie
       # SSH host keys and other state survive container re-creation (stable fingerprint).
@@ -44,6 +54,14 @@ services:
       context: ./honeypots/canary_http
     container_name: chronos-edge-canary
     mem_limit: 100m
+    # Honeytoken AWS key pairs, one per bait file (honeypots/canary_http/app.py); unset = bait off.
+    environment:
+      - HONEYTOKEN_DOTENV_AWS_KEY_ID=${HONEYTOKEN_DOTENV_AWS_KEY_ID:-}
+      - HONEYTOKEN_DOTENV_AWS_SECRET=${HONEYTOKEN_DOTENV_AWS_SECRET:-}
+      - HONEYTOKEN_WPCONFIG_AWS_KEY_ID=${HONEYTOKEN_WPCONFIG_AWS_KEY_ID:-}
+      - HONEYTOKEN_WPCONFIG_AWS_SECRET=${HONEYTOKEN_WPCONFIG_AWS_SECRET:-}
+      - HONEYTOKEN_GIT_AWS_KEY_ID=${HONEYTOKEN_GIT_AWS_KEY_ID:-}
+      - HONEYTOKEN_GIT_AWS_SECRET=${HONEYTOKEN_GIT_AWS_SECRET:-}
     tmpfs:
       - /tmp
     ports:

@@ -1,0 +1,5 @@
+# Export the index, sourcetype, saved searches and dashboard system-wide so they are
+# visible without per-object sharing. Free has no role model; the whole UI is admin.
+[]
+access = read : [ * ], write : [ admin ]
+export = system

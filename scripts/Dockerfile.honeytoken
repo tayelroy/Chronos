@@ -1,0 +1,6 @@
+FROM python:3.12-slim
+RUN pip install --no-cache-dir boto3==1.35.36
+COPY honeytoken-poller.py /app/honeytoken-poller.py
+# Writes ./honeytoken on the core; scripts/deploy.sh chowns it to nobody (65534).
+USER nobody
+ENTRYPOINT ["python", "-u", "/app/honeytoken-poller.py"]

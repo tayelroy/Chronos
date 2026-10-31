@@ -26,12 +26,20 @@ sources:
       - /var/log/chronos-replay/*.json
     read_from: beginning
 
+  # Honeytoken key use pulled from CloudTrail by scripts/honeytoken-poller.py (core, profile "honeytokens").
+  honeytoken_logs:
+    type: file
+    include:
+      - /var/log/chronos-honeytoken/events.json
+    read_from: beginning
+
 transforms:
   normalize_events:
     type: remap
     inputs:
       - edge_stream
       - replay_logs
+      - honeytoken_logs
     source: |
       # 1. Parse the raw honeypot JSON line shipped by the edge (or written by the replay harness).
       parsed, err = parse_json(.message)
@@ -58,13 +66,19 @@ transforms:
       } else if .event_type == "canary_http_hit" {
         .honeypot = "canary"
         probe = join!(compact([to_string(.path) ?? "", to_string(.query) ?? "", to_string(.body) ?? "", to_string(.user_agent) ?? ""]), " ")
-        lookup_key = if match(probe, r'(?i)(\.\./|/etc/passwd|\$\{jndi:|/bin/(ba)?sh|\b(wget|curl)\s|phpunit|eval-stdin|\bcmd=|\bexec\b|union\s+select|<script|sleep\(|/boot\.ini|xdebug|\bthinkphp\b|invokefunction|/shell\b|base64_decode)') {
+        lookup_key = if .honeytoken_served == true {
+          # The response carried a honeytoken AWS key pair (canary bait files).
+          "canary.honeytoken"
+        } else if match(probe, r'(?i)(\.\./|/etc/passwd|\$\{jndi:|/bin/(ba)?sh|\b(wget|curl)\s|phpunit|eval-stdin|\bcmd=|\bexec\b|union\s+select|<script|sleep\(|/boot\.ini|xdebug|\bthinkphp\b|invokefunction|/shell\b|base64_decode)') {
           "canary.exploit"
         } else if match(probe, r'(?i)(admin|config|\.env\b|\.git/|wp-(login|admin|content|includes)|xmlrpc|phpmyadmin|pma|backup|\.sql\b|\.bak\b|server-status|actuator|\.aws|\.ssh|\.ds_store|login|setup|install|\.php\b)') {
           "canary.enumeration"
         } else {
           "canary.probe"
         }
+      } else if .event_type == "honeytoken_key_used" {
+        .honeypot = "honeytoken"
+        lookup_key = "honeytoken.key_used"
       }
       .detection_key = lookup_key
 
@@ -94,6 +108,10 @@ transforms:
         if match(cmd, r'\bhistory\s+-c\b|HISTFILE|\bchattr\b') { techs = push(techs, "T1070.003") }
         if match(cmd, r'\bchpasswd\b|\bpasswd\b|\buseradd\b|\badduser\b') { techs = push(techs, "T1098") }
         if match(cmd, r'/etc/(shadow|passwd|master\.passwd)') { techs = push(techs, "T1003.008") }
+        # Breadcrumbs (honeypots/cowrie/start-cowrie.py): cloud keys, shell history, ssh/scp to user@host.
+        if match(cmd, r'\.aws\b|AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY)|\bAKIA') { techs = push(techs, "T1552.001") }
+        if match(cmd, r'\b(cat|less|more|head|tail|grep|strings)\s[^;&|>]*\.\w*_history\b') { techs = push(techs, "T1552.003") }
+        if match(cmd, r'(^|[;&|(]\s*)(sudo\s+)?(ssh|scp|sshpass|rsync)\s[^;&|]*[\w.-]+@[\w.-]+') { techs = push(techs, "T1021.004") }
         if match(cmd, r'\bchmod\s+(\+x|[0-7]{3,4})') { techs = push(techs, "T1222.002") }
         if match(cmd, r'\b(uname|lscpu|nproc|hostname|dmidecode|lspci|free|df)\b|/proc/(cpuinfo|meminfo|version)|/etc/\S*release|/etc/issue') { techs = push(techs, "T1082") }
         if match(cmd, r'\b(whoami|id|who|last|w)\b') { techs = push(techs, "T1033") }
@@ -110,6 +128,13 @@ transforms:
         if persistent { .severity = 5 }
       }
 
+  # Splunk gets live sensor + honeytoken events only; synthetic replay never leaves OpenSearch.
+  live_only:
+    type: filter
+    inputs:
+      - normalize_events
+    condition: '.ingest_stream == "logs"'
+
 sinks:
   opensearch_sink:
     type: elasticsearch
@@ -123,3 +148,26 @@ sinks:
       # chronos-logs-* = live sensor data, chronos-replay-* = synthetic.
       index: "chronos-{{ ingest_stream }}-%Y.%m.%d"
     suppress_type_name: true
+
+  # Second SIEM: mirror the live index into Splunk over HEC. Own disk buffer that drops when full,
+  # so a Splunk outage or the splunk profile being off never backs up the OpenSearch path.
+  splunk_sink:
+    type: splunk_hec_logs
+    inputs:
+      - live_only
+    endpoint: "http://splunk:8088"
+    default_token: "${SPLUNK_HEC_TOKEN:-disabled}"
+    index: chronos
+    sourcetype: chronos:event
+    host_key: sensor_id
+    timestamp_key: timestamp
+    encoding:
+      codec: json
+    acknowledgements:
+      indexer_acknowledgements_enabled: false
+    healthcheck:
+      enabled: false
+    buffer:
+      type: disk
+      max_size: 536870912  # 512 MiB; Vector's disk buffer minimum is 256 MiB
+      when_full: drop_newest

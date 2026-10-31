@@ -1,5 +1,6 @@
 # chronos-soc-core (m7i-flex.large, 8 GB): SIEM + case management.
-# Memory budget: OpenSearch 2048m + Dashboards 600m + TheHive 1800m + Vector 300m + triage 128m ≈ 4.9 GB.
+# Memory budget: OpenSearch 2048m + Dashboards 600m + TheHive 1800m + Vector 300m + triage 128m
+# + Splunk 1536m (+ honeytoken poller 192m when enabled) ≈ 6.6 GB on the 8 GB core.
 name: chronos-core
 
 services:
@@ -84,7 +85,11 @@ services:
     volumes:
       - ./config/vector:/etc/vector:ro
       - ./replay:/var/log/chronos-replay:ro
+      - ./honeytoken:/var/log/chronos-honeytoken:ro
       - vector-core-data:/var/lib/vector
+    environment:
+      # Mirror of the live index into Splunk (vector-core.yaml splunk_hec_logs sink). Empty = sink idle.
+      - SPLUNK_HEC_TOKEN=${SPLUNK_HEC_TOKEN:-}
     ports:
       # Sensor telemetry. chronos-soc-sg admits 9002 only from chronos-sensor-sg.
       - "0.0.0.0:9002:9002"
@@ -111,7 +116,59 @@ services:
       thehive:
         condition: service_started
 
+  # Honeytoken key use from the honeytoken account's CloudTrail (scripts/honeytoken-poller.py).
+  # Enabled by COMPOSE_PROFILES=honeytokens, which scripts/deploy.sh writes to .env once the
+  # HONEYTOKEN_* settings from honeytokens.env are present.
+  honeytoken-poller:
+    profiles: ["honeytokens"]
+    build:
+      context: ./scripts
+      dockerfile: Dockerfile.honeytoken
+    container_name: chronos-honeytoken-poller
+    restart: unless-stopped
+    mem_limit: 192m
+    # IMDSv2 hop limit 1: only a host-network container can reach the core's instance role.
+    network_mode: host
+    environment:
+      - HONEYTOKEN_READER_ROLE_ARN=${HONEYTOKEN_READER_ROLE_ARN:-}
+      - HONEYTOKEN_DOTENV_AWS_KEY_ID=${HONEYTOKEN_DOTENV_AWS_KEY_ID:-}
+      - HONEYTOKEN_WPCONFIG_AWS_KEY_ID=${HONEYTOKEN_WPCONFIG_AWS_KEY_ID:-}
+      - HONEYTOKEN_GIT_AWS_KEY_ID=${HONEYTOKEN_GIT_AWS_KEY_ID:-}
+      - HONEYTOKEN_COWRIE_AWS_KEY_ID=${HONEYTOKEN_COWRIE_AWS_KEY_ID:-}
+    volumes:
+      - ./honeytoken:/var/log/chronos-honeytoken
+    command: ["--loop", "300"]
+
+  # Splunk Free: a second SIEM over the same live events, fed by Vector HEC. One-instance, 500 MB/day,
+  # no alerting or auth (bound to localhost, reached only through the SSM tunnel). Enabled by
+  # COMPOSE_PROFILES=splunk, which scripts/deploy.sh sets once SPLUNK_HEC_TOKEN is in .env.
+  splunk:
+    profiles: ["splunk"]
+    image: splunk/splunk@sha256:9280f9ce267b212e5596aa1832cdfd3f9be886c378da35ebc87499323ee447a4  # splunk/splunk:10.6.0.5
+    container_name: chronos-splunk
+    restart: unless-stopped
+    mem_limit: 1536m
+    environment:
+      - SPLUNK_START_ARGS=--accept-license
+      - SPLUNK_GENERAL_TERMS=--accept-sgt-current-at-splunk-com
+      - SPLUNK_LICENSE_URI=Free
+      - SPLUNK_PASSWORD=${SPLUNK_PASSWORD:?set by scripts/deploy.sh}
+      - SPLUNK_HEC_TOKEN=${SPLUNK_HEC_TOKEN:?set by scripts/deploy.sh}
+      - SPLUNK_HEC_SSL=false
+      # Bind-mounting into /opt/splunk breaks the startup tar step; install the app from a tgz instead.
+      # scripts/deploy.sh rebuilds splunk/chronos.tgz from config/splunk/chronos/ before compose up.
+      - SPLUNK_APPS_URL=/chronos-apps/chronos.tgz
+    volumes:
+      - ./splunk:/chronos-apps:ro
+      - splunk-etc:/opt/splunk/etc
+      - splunk-var:/opt/splunk/var
+    ports:
+      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8088:8088"
+
 volumes:
   opensearch-data:
   thehive-data:
   vector-core-data:
+  splunk-etc:
+  splunk-var:

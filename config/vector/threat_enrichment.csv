@@ -20,3 +20,5 @@ cowrie.session.closed,1,None,None,Session closed
 canary.probe,2,T1595.002,Reconnaissance,HTTP scan or crawl hit
 canary.enumeration,3,T1595.003,Reconnaissance,HTTP sensitive path / wordlist enumeration
 canary.exploit,4,T1190,Initial Access,HTTP exploit payload attempt
+canary.honeytoken,4,T1552.001,Credential Access,Honeytoken AWS keys served from a bait file
+honeytoken.key_used,5,T1078.004,Initial Access,Honeytoken AWS key used against the AWS API (CloudTrail)

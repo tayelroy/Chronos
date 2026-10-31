@@ -44,6 +44,10 @@
         "body": { "type": "keyword", "ignore_above": 4096 },
         "user_agent": { "type": "keyword", "ignore_above": 1024 },
         "headers": { "type": "flat_object" },
+        "persona": { "type": "keyword" },
+        "bait": { "type": "keyword" },
+        "honeytoken_served": { "type": "boolean" },
+        "status": { "type": "integer" },
         "geo": {
           "properties": {
             "country_iso_code": { "type": "keyword" },

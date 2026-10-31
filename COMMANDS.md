@@ -12,10 +12,32 @@ IDs
 
 ## Start / stop
 
+From anywhere (shell function in ~/.zshrc, see below):
+
+    chronos                             # = ./start_chronos.sh
+    chronos start --no-tunnels
+    chronos stop                        # = ./stop_chronos.sh
+    chronos stop --all
+    chronos cmds                        # print this file
+
+From the repo:
+
     ./start_chronos.sh                  # start both instances if stopped, compose up both, tunnels 9000/5601/9200, opens browser
     ./start_chronos.sh --no-tunnels     # same, without tunnels
     ./stop_chronos.sh                   # stop the core only (sensor keeps collecting, events buffer on the sensor)
     ./stop_chronos.sh --all             # stop both (collection pauses)
+
+The `chronos` function (already in ~/.zshrc on this Mac; adjust the path on another machine):
+
+    chronos() {
+      local repo="$HOME/Coding/Chronos"
+      case "${1:-start}" in
+        start) shift 2>/dev/null; "$repo/start_chronos.sh" "$@" ;;
+        stop)  shift; "$repo/stop_chronos.sh" "$@" ;;
+        cmds)  cat "$repo/COMMANDS.md" ;;
+        *)     echo "usage: chronos [start [--no-tunnels] | stop [--all] | cmds]" >&2; return 2 ;;
+      esac
+    }
 
     aws ec2 describe-instances --instance-ids i-073658c52d98d9975 i-024b46954f573b978 \
       --query 'Reservations[].Instances[].[InstanceId,State.Name]' --output text
@@ -25,6 +47,8 @@ IDs
     http://localhost:5601   OpenSearch Dashboards  ->  Dashboards > "Chronos - Honeypot overview"
     http://localhost:9000   TheHive                ->  analyst@chronos.local (password below)
     http://localhost:9200   OpenSearch API
+    http://localhost:8000   Splunk            ->  admin / `sudo grep ^SPLUNK_PASSWORD= .env` on the core;
+                                                  app "Chronos" > dashboard "Chronos - Detections"
 
 Single tunnel, if you only need one:
 
@@ -47,6 +71,18 @@ TheHive credentials [core]:
     scripts/deploy.sh core
     scripts/deploy.sh sensor
 
+Honeytokens (README "Experiments"). One-time AWS setup (admin `default` profile + `chronos`), writes ./honeytokens.env:
+
+    aws login --profile default                                  # root/admin session (AWS_PROFILE=chronos is exported)
+    ADMIN_PROFILE=default scripts/honeytokens-provision.sh <new-account-email>
+
+Then `scripts/deploy.sh core` and `scripts/deploy.sh sensor` copy what each side needs. Check:
+
+    curl -si http://34.235.107.113/ | grep -i '^server'          # your IP's persona
+    curl -s  http://34.235.107.113/.env | grep AWS_ACCESS        # bait on (404 page = off)
+    [sensor] docker logs chronos-edge-cowrie 2>&1 | grep start-cowrie   # breadcrumbs planted
+    [core]   docker logs --tail 20 chronos-honeytoken-poller            # CloudTrail polls and new key use
+
 ## Container status and logs
 
     [core]   docker compose -f docker-compose.core.yml ps
@@ -62,6 +98,17 @@ TheHive credentials [core]:
     curl -s 'localhost:9200/chronos-logs-*/_count'
     curl -s 'localhost:9200/chronos-logs-*/_search?size=5&sort=timestamp:desc&q=eventid:cowrie.command.input' | jq '.hits.hits[]._source | {timestamp,src_ip,input}'
 
+## Splunk [core]
+
+    PW=$(sudo grep ^SPLUNK_PASSWORD= /home/ssm-user/Chronos/.env | cut -d= -f2-)
+    S="docker exec -u splunk chronos-splunk /opt/splunk/bin/splunk"
+    $S search 'index=chronos | stats count by sourcetype host' -auth admin:$PW        # live HEC flow
+    $S search '| savedsearch "Chronos - Honeytoken key used (T1078.004)"' -auth admin:$PW
+    # One-time history load (Vector only mirrors new events). --until = earliest time already in Splunk:
+    TOKEN=$(grep ^SPLUNK_HEC_TOKEN= .env | cut -d= -f2-)
+    OPENSEARCH_HOST=http://localhost:9200 SPLUNK_HEC=http://localhost:8088 SPLUNK_HEC_TOKEN=$TOKEN \
+      python3 scripts/splunk-backfill.py --dry-run          # count + MB; drop --dry-run to send
+
 ## Verification [core]
 
     bash scripts/verify-gate1.sh        # template/pipeline/ISM, replay tagging, replay kept out of live index
@@ -74,10 +121,14 @@ From the Mac:
     nc -zv -G 5 34.235.107.113 22; nc -zv -G 5 34.235.107.113 23; nc -zv -G 5 34.235.107.113 80   # open
     nc -zv -G 5 98.95.227.115 9002                                                                    # must fail
 
-## Findings report (on the Mac, while ./start_chronos.sh is running: it tunnels 9200)
+## Findings report and charts (on the Mac, while ./start_chronos.sh is running: it tunnels 9200)
 
-    python3 scripts/findings-report.py --exclude-ip "$(curl -s https://checkip.amazonaws.com)"
+    # also exclude the IP honeytokens-provision.sh checked the keys from, if it has changed since
+    python3 scripts/findings-report.py --exclude-ip "$(curl -s https://checkip.amazonaws.com)" --exclude-ip <older-ip>
     # writes reports/findings-<date>.md in this repo; exits 2 if any section has no data yet
+    uv run scripts/findings-charts.py --exclude-ip "$(curl -s https://checkip.amazonaws.com)" --exclude-ip <older-ip> \
+      --honeytoken-visible-until 2026-10-20T15:58:14          # honeytoken account suspended after this
+    # writes reports/charts/*.png
 
 ## DFIR [sensor]
 
