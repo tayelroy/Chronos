@@ -223,3 +223,15 @@ export AWS_PROFILE=chronos        # least-privilege IAM user chronos-operator (c
 ```
 
 `start_chronos.sh`, `stop_chronos.sh` and `scripts/deploy.sh` share `scripts/lib/ssm.sh` (SSM `send-command` runner, wait-for-SSM, start-if-stopped). The `chronos-operator` IAM user can only: describe EC2/SSM, start/stop/reboot the two Chronos instances, edit the two Chronos security groups, and open SSM sessions or send commands to those two instances.
+
+---
+
+## Responders
+
+`responders/tarpit_responder.py` is a planned tarpit responder and is not yet implemented. It only queries OpenSearch and prints matching events.
+
+---
+
+## Documentation
+
+Design documents (scope, architecture, and the implementation plan) are kept private and are not published in this repository.
